@@ -1,0 +1,390 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Global Helpers
+    // -------------------------------------------------------------------------
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == '8887ashu@gmail.com' && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isChatMember(chatId) {
+      return exists(/databases/$(database)/documents/chats/$(chatId)/members/$(request.auth.uid));
+    }
+
+    function isUserBanned(userId) {
+      return exists(/databases/$(database)/documents/profiles/$(userId)) &&
+        get(/databases/$(database)/documents/profiles/$(userId)).data.banned == true;
+    }
+
+    function isValidHexColor(color) {
+      return color is string && color.size() == 7 && color.matches('^#[0-9A-Fa-f]{6}$');
+    }
+
+    function isValidUsername(name) {
+      return name is string && name.size() >= 3 && name.size() <= 32 && name.matches('^[A-Za-z0-9]+$');
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation Blueprints
+    // -------------------------------------------------------------------------
+    function isValidProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'username', 'color', 'banned', 'lastUsernameChangeAt', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'username', 'color', 'banned', 'lastUsernameChangeAt', 'createdAt']) &&
+        data.uid is string && data.uid == userId &&
+        isValidUsername(data.username) &&
+        isValidHexColor(data.color) &&
+        data.banned is bool &&
+        (data.lastUsernameChangeAt == null || data.lastUsernameChangeAt is timestamp) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidUserChatLink(data, chatId) {
+      return data.keys().hasAll(['chatId', 'type', 'name', 'description', 'partnerId', 'partnerUsername', 'partnerColor', 'joinedAt']) &&
+        data.keys().hasOnly(['chatId', 'type', 'name', 'description', 'partnerId', 'partnerUsername', 'partnerColor', 'joinedAt']) &&
+        data.chatId is string && data.chatId == chatId &&
+        data.type in ['dm', 'group'] &&
+        (data.name == null || (data.name is string && data.name.size() >= 2 && data.name.size() <= 60)) &&
+        (data.description == null || (data.description is string && data.description.size() <= 200)) &&
+        (data.partnerId == null || isValidId(data.partnerId)) &&
+        (data.partnerUsername == null || isValidUsername(data.partnerUsername)) &&
+        (data.partnerColor == null || isValidHexColor(data.partnerColor)) &&
+        data.joinedAt is timestamp;
+    }
+
+    function isValidBlock(data, blockerId, blockedId) {
+      return data.keys().hasAll(['blockerId', 'blockedId', 'blockedUsername', 'blockedColor', 'createdAt']) &&
+        data.keys().hasOnly(['blockerId', 'blockedId', 'blockedUsername', 'blockedColor', 'createdAt']) &&
+        data.blockerId is string && data.blockerId == blockerId &&
+        data.blockedId is string && data.blockedId == blockedId &&
+        isValidUsername(data.blockedUsername) &&
+        isValidHexColor(data.blockedColor) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidRateLimit(data, userId) {
+      return data.keys().hasAll(['uid', 'windowStart', 'count', 'lastMessageId']) &&
+        data.keys().hasOnly(['uid', 'windowStart', 'count', 'lastMessageId']) &&
+        data.uid is string && data.uid == userId &&
+        data.windowStart is timestamp &&
+        data.count is int && data.count >= 1 && data.count <= 5 &&
+        isValidId(data.lastMessageId);
+    }
+
+    function isValidChat(data) {
+      return data.keys().hasAll(['type', 'name', 'description', 'dmKey', 'createdBy', 'memberCount', 'createdAt']) &&
+        data.keys().hasOnly(['type', 'name', 'description', 'dmKey', 'createdBy', 'memberCount', 'createdAt']) &&
+        data.type in ['dm', 'group'] &&
+        (
+          (data.type == 'group' && data.name is string && data.name.trim().size() >= 2 && data.name.size() <= 60 && data.dmKey == null) ||
+          (data.type == 'dm' && data.name == null && data.description == null && data.dmKey is string && data.dmKey.size() >= 3 && data.dmKey.size() <= 260)
+        ) &&
+        (data.description == null || (data.description is string && data.description.size() <= 200)) &&
+        isValidId(data.createdBy) &&
+        data.memberCount is int && data.memberCount >= 0 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidChatMember(data, memberId) {
+      return data.keys().hasAll(['userId', 'username', 'color', 'joinedAt']) &&
+        data.keys().hasOnly(['userId', 'username', 'color', 'joinedAt']) &&
+        data.userId is string && data.userId == memberId &&
+        isValidUsername(data.username) &&
+        isValidHexColor(data.color) &&
+        data.joinedAt is timestamp;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['senderId', 'senderUsername', 'senderColor', 'body', 'createdAt']) &&
+        data.keys().hasOnly(['senderId', 'senderUsername', 'senderColor', 'body', 'createdAt']) &&
+        data.senderId is string && data.senderId == request.auth.uid &&
+        isValidUsername(data.senderUsername) &&
+        isValidHexColor(data.senderColor) &&
+        data.body is string && data.body.trim().size() >= 1 && data.body.size() <= 1000 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['reporterId', 'reportedUserId', 'chatId', 'messageId', 'reason', 'createdAt']) &&
+        data.keys().hasOnly(['reporterId', 'reportedUserId', 'chatId', 'messageId', 'reason', 'createdAt']) &&
+        data.reporterId is string && data.reporterId == request.auth.uid &&
+        (data.reportedUserId == null || isValidId(data.reportedUserId)) &&
+        (data.chatId == null || isValidId(data.chatId)) &&
+        (data.messageId == null || isValidId(data.messageId)) &&
+        data.reason is string && data.reason.trim().size() >= 1 && data.reason.size() <= 500 &&
+        data.createdAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Connection Health Check Document
+    // -------------------------------------------------------------------------
+    match /test/connection {
+      allow get: if true;
+    }
+
+    // -------------------------------------------------------------------------
+    // Anonymous Profiles
+    // -------------------------------------------------------------------------
+    match /profiles/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn() && existing().banned == false;
+
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidProfile(incoming(), userId) &&
+        incoming().banned == false &&
+        incoming().lastUsernameChangeAt == null &&
+        incoming().createdAt == request.time;
+
+      allow update: if isSignedIn() &&
+        isValidId(userId) &&
+        isValidProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        (
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['banned'])
+          ) ||
+          (
+            isOwner(userId) &&
+            !existing().banned &&
+            incoming().banned == existing().banned &&
+            incoming().color == existing().color &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['username', 'lastUsernameChangeAt']) &&
+            incoming().lastUsernameChangeAt == request.time &&
+            (
+              existing().lastUsernameChangeAt == null ||
+              request.time >= existing().lastUsernameChangeAt + duration.value(24, 'h')
+            )
+          )
+        );
+
+      allow delete: if false;
+
+      // User's joined groups and DM index
+      match /myChats/{chatId} {
+        allow get, list: if isOwner(userId);
+
+        allow create: if isSignedIn() &&
+          isValidId(userId) &&
+          isValidId(chatId) &&
+          isValidUserChatLink(incoming(), chatId) &&
+          incoming().joinedAt == request.time &&
+          existsAfter(/databases/$(database)/documents/chats/$(chatId)/members/$(userId)) &&
+          (
+            isOwner(userId) ||
+            (
+              incoming().type == 'dm' &&
+              incoming().partnerId == request.auth.uid &&
+              existsAfter(/databases/$(database)/documents/chats/$(chatId)/members/$(request.auth.uid)) &&
+              !exists(/databases/$(database)/documents/profiles/$(userId)/blocks/$(request.auth.uid))
+            )
+          );
+
+        allow delete: if isOwner(userId) && isValidId(chatId);
+        allow update: if false;
+      }
+
+      // User's block list
+      match /blocks/{blockedUserId} {
+        allow get, list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(blockedUserId) &&
+          blockedUserId != userId &&
+          isValidBlock(incoming(), userId, blockedUserId) &&
+          incoming().createdAt == request.time &&
+          exists(/databases/$(database)/documents/profiles/$(blockedUserId));
+
+        allow delete: if isOwner(userId) && isValidId(blockedUserId);
+        allow update: if false;
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // Per-User Message Rate Limit (Max 5 messages per 10 seconds)
+    // -------------------------------------------------------------------------
+    match /rateLimits/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidRateLimit(incoming(), userId) &&
+        incoming().windowStart == request.time &&
+        incoming().count == 1;
+
+      allow update: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidRateLimit(incoming(), userId) &&
+        (
+          (
+            request.time < existing().windowStart + duration.value(10, 's') &&
+            incoming().windowStart == existing().windowStart &&
+            incoming().count == existing().count + 1
+          ) ||
+          (
+            request.time >= existing().windowStart + duration.value(10, 's') &&
+            incoming().windowStart == request.time &&
+            incoming().count == 1
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Chats, Members, and Messages
+    // -------------------------------------------------------------------------
+    match /chats/{chatId} {
+      allow get: if isSignedIn() && isValidId(chatId) && (
+        existing().type == 'group' || isChatMember(chatId)
+      );
+
+      // Only public groups can be queried/listed globally; DMs cannot be listed here.
+      allow list: if isSignedIn() && existing().type == 'group';
+
+      allow create: if isSignedIn() &&
+        isValidId(chatId) &&
+        isValidChat(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        !isUserBanned(request.auth.uid) &&
+        existsAfter(/databases/$(database)/documents/chats/$(chatId)/members/$(request.auth.uid)) &&
+        (
+          (incoming().type == 'group' && incoming().memberCount == 1) ||
+          (incoming().type == 'dm' && incoming().memberCount == 2)
+        );
+
+      allow update: if isSignedIn() &&
+        isValidId(chatId) &&
+        isValidChat(incoming()) &&
+        existing().type == 'group' &&
+        incoming().type == existing().type &&
+        incoming().name == existing().name &&
+        incoming().description == existing().description &&
+        incoming().dmKey == existing().dmKey &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['memberCount']) &&
+        (
+          // Join group action
+          (
+            !isUserBanned(request.auth.uid) &&
+            !exists(/databases/$(database)/documents/chats/$(chatId)/members/$(request.auth.uid)) &&
+            existsAfter(/databases/$(database)/documents/chats/$(chatId)/members/$(request.auth.uid)) &&
+            incoming().memberCount == existing().memberCount + 1
+          ) ||
+          // Leave group action
+          (
+            exists(/databases/$(database)/documents/chats/$(chatId)/members/$(request.auth.uid)) &&
+            !existsAfter(/databases/$(database)/documents/chats/$(chatId)/members/$(request.auth.uid)) &&
+            incoming().memberCount == existing().memberCount - 1
+          )
+        );
+
+      allow delete: if false;
+
+      match /members/{memberId} {
+        allow get: if isSignedIn() && isValidId(chatId) && isValidId(memberId) && (
+          isChatMember(chatId) ||
+          get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group'
+        );
+
+        allow list: if isSignedIn() && isChatMember(chatId);
+
+        allow create: if isSignedIn() &&
+          isValidId(chatId) &&
+          isValidId(memberId) &&
+          isValidChatMember(incoming(), memberId) &&
+          incoming().joinedAt == request.time &&
+          !isUserBanned(request.auth.uid) &&
+          exists(/databases/$(database)/documents/profiles/$(memberId)) &&
+          (
+            // Self-creating or joining a group
+            (
+              memberId == request.auth.uid &&
+              getAfter(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group'
+            ) ||
+            // Starting a DM (creator adds both self and target)
+            (
+              (
+                memberId == request.auth.uid ||
+                (
+                  !exists(/databases/$(database)/documents/profiles/$(memberId)/blocks/$(request.auth.uid)) &&
+                  !exists(/databases/$(database)/documents/profiles/$(request.auth.uid)/blocks/$(memberId))
+                )
+              ) &&
+              getAfter(/databases/$(database)/documents/chats/$(chatId)).data.type == 'dm' &&
+              getAfter(/databases/$(database)/documents/chats/$(chatId)).data.createdBy == request.auth.uid
+            )
+          );
+
+        allow delete: if isOwner(memberId) &&
+          isValidId(chatId) &&
+          isValidId(memberId) &&
+          get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group';
+
+        allow update: if false;
+      }
+
+      match /messages/{messageId} {
+        allow get, list: if isSignedIn() && isChatMember(chatId);
+
+        allow create: if isSignedIn() &&
+          isValidId(chatId) &&
+          isValidId(messageId) &&
+          isValidMessage(incoming()) &&
+          incoming().createdAt == request.time &&
+          isChatMember(chatId) &&
+          !isUserBanned(request.auth.uid) &&
+          getAfter(/databases/$(database)/documents/rateLimits/$(request.auth.uid)).data.lastMessageId == messageId;
+
+        allow update, delete: if false;
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // Moderation Reports (Write-Only for Authenticated Users)
+    // -------------------------------------------------------------------------
+    match /reports/{reportId} {
+      allow create: if isSignedIn() &&
+        isValidId(reportId) &&
+        isValidReport(incoming()) &&
+        incoming().createdAt == request.time;
+
+      allow get, list: if isAdmin();
+      allow update, delete: if false;
+    }
+  }
+}

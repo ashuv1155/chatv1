@@ -1,0 +1,147 @@
+{
+  "entities": {
+    "Profile": {
+      "title": "Profile",
+      "description": "Anonymous user profile identified only by Firebase Auth UID (no email, name, or photo).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "username": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[A-Za-z0-9]+$" },
+        "color": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "banned": { "type": "boolean" },
+        "lastUsernameChangeAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "username", "color", "banned", "lastUsernameChangeAt", "createdAt"]
+    },
+    "UserChatLink": {
+      "title": "UserChatLink",
+      "description": "User-scoped index of joined groups and direct message conversations.",
+      "type": "object",
+      "properties": {
+        "chatId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "type": { "type": "string", "enum": ["dm", "group"] },
+        "name": { "type": "string", "maxLength": 60 },
+        "description": { "type": "string", "maxLength": 200 },
+        "partnerId": { "type": "string", "maxLength": 128 },
+        "partnerUsername": { "type": "string", "maxLength": 32 },
+        "partnerColor": { "type": "string", "maxLength": 7 },
+        "joinedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["chatId", "type", "joinedAt"]
+    },
+    "BlockRecord": {
+      "title": "BlockRecord",
+      "description": "User-scoped record of a blocked anonymous user.",
+      "type": "object",
+      "properties": {
+        "blockerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "blockedId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "blockedUsername": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "blockedColor": { "type": "string", "minLength": 7, "maxLength": 7 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["blockerId", "blockedId", "blockedUsername", "blockedColor", "createdAt"]
+    },
+    "RateLimitState": {
+      "title": "RateLimitState",
+      "description": "Per-user 10-second sliding/fixed rate limit state (max 5 messages per 10s).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "windowStart": { "type": "string", "format": "date-time" },
+        "count": { "type": "integer" },
+        "lastMessageId": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "required": ["uid", "windowStart", "count", "lastMessageId"]
+    },
+    "Chat": {
+      "title": "Chat",
+      "description": "A public group room or a private 1:1 direct message room.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["dm", "group"] },
+        "name": { "type": "string", "maxLength": 60 },
+        "description": { "type": "string", "maxLength": 200 },
+        "dmKey": { "type": "string", "maxLength": 260 },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["type", "createdBy", "memberCount", "createdAt"]
+    },
+    "ChatMember": {
+      "title": "ChatMember",
+      "description": "Membership record inside a chat subcollection.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "username": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "color": { "type": "string", "minLength": 7, "maxLength": 7 },
+        "joinedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "username", "color", "joinedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Immutable chat message (max 1000 characters, 7-day retention).",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "senderUsername": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "senderColor": { "type": "string", "minLength": 7, "maxLength": 7 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "senderUsername", "senderColor", "body", "createdAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Abuse report submitted by an authenticated user.",
+      "type": "object",
+      "properties": {
+        "reporterId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reportedUserId": { "type": "string", "maxLength": 128 },
+        "chatId": { "type": "string", "maxLength": 128 },
+        "messageId": { "type": "string", "maxLength": 128 },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reporterId", "reason", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/profiles/{userId}": {
+      "schema": { "$ref": "#/entities/Profile" },
+      "description": "Anonymous user profiles keyed by Firebase Auth UID."
+    },
+    "/profiles/{userId}/myChats/{chatId}": {
+      "schema": { "$ref": "#/entities/UserChatLink" },
+      "description": "Per-user list of joined groups and DM rooms."
+    },
+    "/profiles/{userId}/blocks/{blockedUserId}": {
+      "schema": { "$ref": "#/entities/BlockRecord" },
+      "description": "Users blocked by userId."
+    },
+    "/rateLimits/{userId}": {
+      "schema": { "$ref": "#/entities/RateLimitState" },
+      "description": "Atomic 10-second rate-limit counter per user."
+    },
+    "/chats/{chatId}": {
+      "schema": { "$ref": "#/entities/Chat" },
+      "description": "Group and direct-message room metadata."
+    },
+    "/chats/{chatId}/members/{memberId}": {
+      "schema": { "$ref": "#/entities/ChatMember" },
+      "description": "Subcollection of members belonging to a chat."
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Immutable messages inside a chat."
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/Report" },
+      "description": "User moderation reports (write-only for regular users)."
+    }
+  }
+}

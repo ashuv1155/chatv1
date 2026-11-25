@@ -1,0 +1,6 @@
+{
+  "name": "VeilChat",
+  "description": "Anonymous real-time group and direct messaging with random handles and zero personal profile exposure.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
