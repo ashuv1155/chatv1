@@ -65,7 +65,7 @@ export const ReportModal: React.FC<ReportModalProps> = ({
       aria-labelledby="report-modal-title"
     >
       <div
-        className="w-full max-w-md rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 space-y-5"
+        className="w-full max-w-md rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.1] p-6 space-y-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
@@ -73,7 +73,7 @@ export const ReportModal: React.FC<ReportModalProps> = ({
             <h2 id="report-modal-title" className="text-lg font-semibold tracking-tight">
               Submit report
             </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 truncate max-w-[260px]">
+            <p className="text-xs text-slate-500 dark:text-neutral-400 truncate max-w-[260px]">
               Reporting {targetLabel}
             </p>
           </div>
@@ -81,7 +81,7 @@ export const ReportModal: React.FC<ReportModalProps> = ({
             type="button"
             onClick={onClose}
             aria-label="Close dialog"
-            className="min-h-[44px] min-w-[44px] -mr-2 rounded-xl flex items-center justify-center text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors"
+            className="min-h-[44px] min-w-[44px] -mr-2 rounded-xl flex items-center justify-center text-slate-500 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -94,14 +94,14 @@ export const ReportModal: React.FC<ReportModalProps> = ({
               {PRESET_REASONS.map((preset) => (
                 <label
                   key={preset}
-                  className="flex items-center gap-3 min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 dark:border-white/[0.08] cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03]"
+                  className="flex items-center gap-3 min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 dark:border-white/[0.08] cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.04]"
                 >
                   <input
                     type="radio"
                     name="report-reason"
                     checked={selectedPreset === preset}
                     onChange={() => setSelectedPreset(preset)}
-                    className="text-indigo-600 focus:ring-indigo-500"
+                    className="text-[#2B84F6] focus:ring-[#2B84F6]"
                   />
                   <span className="text-sm">{preset}</span>
                 </label>
@@ -120,7 +120,7 @@ export const ReportModal: React.FC<ReportModalProps> = ({
               maxLength={400}
               rows={3}
               placeholder="Briefly describe what happened..."
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0B0E14] border border-slate-200 dark:border-white/[0.1] text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/[0.1] text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6] resize-none"
             />
           </div>
 
@@ -134,7 +134,7 @@ export const ReportModal: React.FC<ReportModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="min-h-[44px] px-4 py-2 rounded-xl text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors"
+              className="min-h-[44px] px-4 py-2 rounded-full text-sm font-medium text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
             >
               Cancel
             </button>

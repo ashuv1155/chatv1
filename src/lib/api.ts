@@ -1549,18 +1549,84 @@ export async function openViewOncePhoto(
   return blobUrl;
 }
 
+const USERNAME_REGEX = /^[A-Za-z0-9_]+$/;
+
+export function validateUsernameInput(raw: string): string {
+  const clean = raw.trim();
+  if (clean.length < 3 || clean.length > 32) {
+    throw new Error('Username must be between 3 and 32 characters.');
+  }
+  if (!USERNAME_REGEX.test(clean)) {
+    throw new Error('Username can only contain letters, numbers, and underscores.');
+  }
+  return clean;
+}
+
+export async function setCustomUsername(
+  profile: Profile,
+  nextUsernameRaw: string,
+): Promise<{
+  username: string;
+  lastUsernameChangeAt: string;
+  usernameHistory: UsernameHistoryEntry[];
+}> {
+  const nextUsername = validateUsernameInput(nextUsernameRaw);
+  if (nextUsername === profile.username) {
+    throw new Error('That is already your current username.');
+  }
+
+  const db = getFirestoreDb();
+  const path = `profiles/${profile.id}`;
+
+  // Prevent accidental duplicate usernames across active accounts
+  try {
+    const existingSnap = await getDocs(
+      query(collection(db, 'profiles'), where('banned', '==', false), limit(100)),
+    );
+    const normalizedTarget = nextUsername.toLowerCase();
+    const conflict = existingSnap.docs.some(
+      (d) =>
+        d.id !== profile.id &&
+        String(d.data().username ?? '').toLowerCase() === normalizedTarget,
+    );
+    if (conflict) {
+      throw new Error('That username is already taken. Try another one.');
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('already taken')) {
+      throw err;
+    }
+    // ignore transient list lookup errors and let rules enforce validity
+  }
+
+  const nowIso = new Date().toISOString();
+  const nextHistory: UsernameHistoryEntry[] = [
+    { username: profile.username, changedAt: nowIso },
+    ...(profile.usernameHistory ?? []),
+  ].slice(0, 20);
+
+  try {
+    await updateDoc(doc(db, 'profiles', profile.id), {
+      username: nextUsername,
+      lastUsernameChangeAt: serverTimestamp(),
+      usernameHistory: nextHistory,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+
+  return {
+    username: nextUsername,
+    lastUsernameChangeAt: nowIso,
+    usernameHistory: nextHistory,
+  };
+}
+
 export async function rotateUsername(profile: Profile): Promise<{
   username: string;
   lastUsernameChangeAt: string;
   usernameHistory: UsernameHistoryEntry[];
 }> {
-  if (profile.lastUsernameChangeAt) {
-    const lastMs = new Date(profile.lastUsernameChangeAt).getTime();
-    if (!Number.isNaN(lastMs) && Date.now() - lastMs < 24 * 60 * 60 * 1000) {
-      throw new Error('You can only generate a new username once every 24 hours.');
-    }
-  }
-
   const db = getFirestoreDb();
   const path = `profiles/${profile.id}`;
   const newUsername = generateUsername();
@@ -1585,6 +1651,83 @@ export async function rotateUsername(profile: Profile): Promise<{
     lastUsernameChangeAt: nowIso,
     usernameHistory: nextHistory,
   };
+}
+
+export function getDisplayName(
+  userId: string | null | undefined,
+  fallbackUsername: string,
+  nicknames: Record<string, string>,
+): string {
+  if (!userId) return fallbackUsername;
+  const nick = nicknames[userId]?.trim();
+  return nick || fallbackUsername;
+}
+
+export function subscribeToNicknames(
+  uid: string,
+  onNicknames: (nicknames: Record<string, string>) => void,
+): () => void {
+  const db = getFirestoreDb();
+  const path = `profiles/${uid}/nicknames`;
+  return onSnapshot(
+    collection(db, 'profiles', uid, 'nicknames'),
+    (snap) => {
+      const map: Record<string, string> = {};
+      for (const docSnap of snap.docs) {
+        const data = docSnap.data();
+        const targetId = String(data.targetUserId ?? docSnap.id);
+        const nick = typeof data.nickname === 'string' ? data.nickname.trim() : '';
+        if (targetId && nick) {
+          map[targetId] = nick;
+        }
+      }
+      onNicknames(map);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    },
+  );
+}
+
+export async function setFriendNickname(
+  ownerId: string,
+  targetUserId: string,
+  nicknameRaw: string,
+): Promise<string> {
+  if (!targetUserId || targetUserId === ownerId) {
+    throw new Error('Cannot set a nickname for yourself.');
+  }
+  const clean = nicknameRaw.trim();
+  if (clean.length < 1 || clean.length > 32) {
+    throw new Error('Nickname must be between 1 and 32 characters.');
+  }
+
+  const db = getFirestoreDb();
+  const path = `profiles/${ownerId}/nicknames/${targetUserId}`;
+  try {
+    await setDoc(doc(db, 'profiles', ownerId, 'nicknames', targetUserId), {
+      ownerId,
+      targetUserId,
+      nickname: clean,
+      updatedAt: serverTimestamp(),
+    });
+    return clean;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function removeFriendNickname(
+  ownerId: string,
+  targetUserId: string,
+): Promise<void> {
+  const db = getFirestoreDb();
+  const path = `profiles/${ownerId}/nicknames/${targetUserId}`;
+  try {
+    await deleteDoc(doc(db, 'profiles', ownerId, 'nicknames', targetUserId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
 }
 
 export async function fetchBlocks(uid: string): Promise<BlockEntry[]> {

@@ -26,15 +26,20 @@ import {
   ensureUserProfile,
   fetchBlocks,
   fetchUnreadCountForChat,
+  getDisplayName,
   joinGroup,
   leaveGroup,
   markChatRead,
+  removeFriendNickname,
   rotateUsername,
+  setCustomUsername,
+  setFriendNickname,
   startDm,
   submitReport,
   subscribeToAdminJoinRequests,
   subscribeToGroupUpdates,
   subscribeToMyChats,
+  subscribeToNicknames,
   unblockUser,
 } from './lib/api';
 import { signInWithGoogle, signOutFirebase, subscribeToAuth } from './lib/firebase';
@@ -100,6 +105,7 @@ export default function App() {
   const [loadingChats, setLoadingChats] = useState(false);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [blocks, setBlocks] = useState<BlockEntry[]>([]);
+  const [nicknames, setNicknames] = useState<Record<string, string>>({});
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
 
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -170,6 +176,7 @@ export default function App() {
   const blockedIdsRef = useRef<Set<string>>(blockedUserIds);
   const notifSettingsRef = useRef<NotificationSettings>(notificationSettings);
   const chatsRef = useRef<ChatSummary[]>(chats);
+  const nicknamesRef = useRef<Record<string, string>>(nicknames);
 
   const myChatsInitializedRef = useRef(false);
   const knownChatIdsRef = useRef<Set<string>>(new Set());
@@ -197,6 +204,10 @@ export default function App() {
   useEffect(() => {
     chatsRef.current = chats;
   }, [chats]);
+
+  useEffect(() => {
+    nicknamesRef.current = nicknames;
+  }, [nicknames]);
 
   // Track tab visibility / focus for smart browser notifications and read marking
   useEffect(() => {
@@ -346,6 +357,7 @@ export default function App() {
         setMyChatLinks([]);
         setGroupMetaMap({});
         setBlocks([]);
+        setNicknames({});
         setUnreadCounts({});
         setNotifications([]);
         setNotificationToast(null);
@@ -385,6 +397,14 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
+
+  // Real-time listener on private friend nicknames
+  useEffect(() => {
+    if (!profile) return;
+    return subscribeToNicknames(profile.id, (map) => {
+      setNicknames(map);
+    });
+  }, [profile]);
 
   // Real-time listener on user's myChats (DMs + joined groups)
   useEffect(() => {
@@ -432,10 +452,15 @@ export default function App() {
           const prevTs = lastMsgTimestampByChatRef.current.get(c.id);
           if (c.lastMessageAt !== prevTs) {
             lastMsgTimestampByChatRef.current.set(c.id, c.lastMessageAt);
+            const senderDisplay = getDisplayName(
+              c.partner?.id ?? c.lastSenderId,
+              c.partner?.username ?? c.lastSenderUsername ?? 'Direct chat',
+              nicknamesRef.current,
+            );
             triggerNotification({
               chatId: c.id,
               kind: 'message',
-              title: c.partner?.username ?? c.lastSenderUsername ?? 'Direct chat',
+              title: senderDisplay,
               body: c.lastMessagePreview ?? 'Sent a message',
               senderUsername: c.partner?.username ?? c.lastSenderUsername ?? undefined,
               senderColor: c.partner?.color,
@@ -487,7 +512,10 @@ export default function App() {
         if (update.lastMessageAt !== prevTs) {
           lastMsgTimestampByChatRef.current.set(chatId, update.lastMessageAt);
           const groupTitle = chatsRef.current.find((c) => c.id === chatId)?.name ?? 'Group';
-          const senderPrefix = update.lastSenderUsername ? `${update.lastSenderUsername}: ` : '';
+          const senderDisplay = update.lastSenderUsername
+            ? getDisplayName(update.lastSenderId, update.lastSenderUsername, nicknamesRef.current)
+            : null;
+          const senderPrefix = senderDisplay ? `${senderDisplay}: ` : '';
           triggerNotification({
             chatId,
             kind: 'message',
@@ -671,6 +699,21 @@ export default function App() {
     setScreen('chat');
   };
 
+  const handleSetUsername = async (nextUsername: string) => {
+    if (!profile) return;
+    const updated = await setCustomUsername(profile, nextUsername);
+    setProfile((prev) =>
+      prev
+        ? {
+            ...prev,
+            username: updated.username,
+            lastUsernameChangeAt: updated.lastUsernameChangeAt,
+            usernameHistory: updated.usernameHistory,
+          }
+        : prev,
+    );
+  };
+
   const handleRotateUsername = async () => {
     if (!profile) return;
     const updated = await rotateUsername(profile);
@@ -684,6 +727,22 @@ export default function App() {
           }
         : prev,
     );
+  };
+
+  const handleSetNickname = async (targetUserId: string, nickname: string) => {
+    if (!profile) return;
+    const clean = await setFriendNickname(profile.id, targetUserId, nickname);
+    setNicknames((prev) => ({ ...prev, [targetUserId]: clean }));
+  };
+
+  const handleRemoveNickname = async (targetUserId: string) => {
+    if (!profile) return;
+    await removeFriendNickname(profile.id, targetUserId);
+    setNicknames((prev) => {
+      const next = { ...prev };
+      delete next[targetUserId];
+      return next;
+    });
   };
 
   const handleBlockConfirm = async () => {
@@ -729,10 +788,10 @@ export default function App() {
 
   if (!authReady || (firebaseUser && bootstrapping && !profile)) {
     return (
-      <div className="min-h-screen bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-slate-100 flex items-center justify-center p-6">
+      <div className="min-h-screen bg-slate-50 dark:bg-black text-slate-900 dark:text-neutral-100 flex items-center justify-center p-6">
         <div className="text-center space-y-2">
           <p className="text-base font-semibold tracking-tight">Buddy Chat</p>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
+          <p className="text-sm text-slate-500 dark:text-neutral-400">
             {bootstrapping ? 'Preparing your anonymous session...' : 'Loading...'}
           </p>
         </div>
@@ -769,6 +828,7 @@ export default function App() {
         onChangeTheme={setThemePreference}
         onUpdateNotificationSettings={handleUpdateNotificationSettings}
         onRequestBrowserPermission={handleRequestBrowserPermission}
+        onSetUsername={handleSetUsername}
         onRotateUsername={handleRotateUsername}
         onUnblock={handleUnblock}
         onOpenProfile={() => openProfilePage(profile.id)}
@@ -780,17 +840,21 @@ export default function App() {
   }
 
   return (
-    <div className="h-dvh-safe w-full bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-slate-100 flex overflow-hidden">
+    <div className="h-dvh-safe w-full bg-slate-50 dark:bg-black text-slate-900 dark:text-neutral-100 flex overflow-hidden">
       {screen === 'profile' && viewedProfileUserId ? (
         <div className="flex-1 h-full overflow-y-auto chat-scroll">
           <ProfilePage
             targetUserId={viewedProfileUserId}
             currentUser={profile}
+            nicknames={nicknames}
             isBlocked={blockedUserIds.has(viewedProfileUserId)}
             onBack={() => setScreen('chat')}
             onOpenSettings={() => setScreen('settings')}
             onProfileUpdated={(updated) => setProfile(updated)}
+            onSetUsername={handleSetUsername}
             onRotateUsername={handleRotateUsername}
+            onSetNickname={handleSetNickname}
+            onRemoveNickname={handleRemoveNickname}
             onStartDm={handleStartDm}
             onRequestReport={(params) => setReportTarget(params)}
             onRequestBlock={(target) => setBlockTarget(target)}
@@ -807,6 +871,7 @@ export default function App() {
             <Sidebar
               profile={profile}
               chats={chats}
+              nicknames={nicknames}
               unreadChatIds={unreadChatIds}
               unreadCounts={unreadCounts}
               notifications={notifications}
@@ -838,6 +903,7 @@ export default function App() {
                 chat={activeChat}
                 allChats={chats}
                 currentUser={profile}
+                nicknames={nicknames}
                 blockedUserIds={blockedUserIds}
                 typingEnabled={notificationSettings.typingIndicators}
                 onChatViewed={handleChatViewed}
@@ -846,6 +912,8 @@ export default function App() {
                 onLeaveGroup={handleLeaveGroup}
                 onStartDm={handleStartDm}
                 onOpenProfile={openProfilePage}
+                onSetNickname={handleSetNickname}
+                onRemoveNickname={handleRemoveNickname}
                 onRequestReport={(params) => setReportTarget(params)}
                 onRequestBlock={(target) => setBlockTarget(target)}
                 onToast={(msg) => setToast(msg)}
@@ -862,7 +930,7 @@ export default function App() {
                         size="lg"
                       />
                       <div>
-                        <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                        <p className="text-xs font-medium text-slate-500 dark:text-neutral-400">
                           Welcome to Buddy Chat
                         </p>
                         <h1 className="text-2xl font-bold tracking-tight">
@@ -893,26 +961,26 @@ export default function App() {
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <div className="p-4 rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] space-y-1.5">
+                    <div className="p-4 rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.08] space-y-1.5">
                       <Clock className="w-5 h-5 text-[#2B84F6]" />
                       <h2 className="text-sm font-semibold">24-hour messages</h2>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                      <p className="text-xs text-slate-500 dark:text-neutral-400 leading-relaxed">
                         Messages and attachments automatically clear after 24 hours.
                       </p>
                     </div>
 
-                    <div className="p-4 rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] space-y-1.5">
+                    <div className="p-4 rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.08] space-y-1.5">
                       <Lock className="w-5 h-5 text-amber-500" />
                       <h2 className="text-sm font-semibold">Private & public rooms</h2>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                      <p className="text-xs text-slate-500 dark:text-neutral-400 leading-relaxed">
                         Create open rooms or private rooms with admin join approvals.
                       </p>
                     </div>
 
-                    <div className="p-4 rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] space-y-1.5">
+                    <div className="p-4 rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.08] space-y-1.5">
                       <ShieldCheck className="w-5 h-5 text-emerald-500" />
                       <h2 className="text-sm font-semibold">View-once & 5 MB files</h2>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                      <p className="text-xs text-slate-500 dark:text-neutral-400 leading-relaxed">
                         Share photos, single-view images, or files up to 5 MB in any chat.
                       </p>
                     </div>
@@ -920,35 +988,39 @@ export default function App() {
 
                   {chats.length > 0 ? (
                     <div className="space-y-3">
-                      <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                      <p className="text-xs font-semibold text-slate-500 dark:text-neutral-400">
                         Jump back into a recent chat
                       </p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                         {chats.slice(0, 4).map((c) => {
                           const hasUnread = unreadChatIds.has(c.id);
                           const unreadCount = unreadCounts[c.id] ?? (hasUnread ? 1 : 0);
+                          const title =
+                            c.type === 'dm'
+                              ? getDisplayName(
+                                  c.partner?.id,
+                                  c.partner?.username ?? 'Direct chat',
+                                  nicknames,
+                                )
+                              : c.name ?? 'Group';
                           return (
                             <button
                               key={c.id}
                               type="button"
                               onClick={() => setActiveChatId(c.id)}
-                              className="p-3.5 rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] hover:border-[#2B84F6]/45 flex items-center gap-3 text-left transition-colors"
+                              className="p-3.5 rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.08] hover:border-[#2B84F6]/45 flex items-center gap-3 text-left transition-colors"
                             >
                               <MessageSquare className="w-4 h-4 text-[#2B84F6] shrink-0" />
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center justify-between gap-2">
-                                  <p className="text-sm font-semibold truncate">
-                                    {c.type === 'dm'
-                                      ? c.partner?.username ?? 'Direct chat'
-                                      : c.name ?? 'Group'}
-                                  </p>
+                                  <p className="text-sm font-semibold truncate">{title}</p>
                                   {hasUnread && (
                                     <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-[#2B84F6] text-white text-[11px] font-bold leading-none flex items-center justify-center tabular-nums shrink-0">
                                       {unreadCount > 99 ? '99+' : unreadCount}
                                     </span>
                                   )}
                                 </div>
-                                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                                <p className="text-xs text-slate-500 dark:text-neutral-400 truncate">
                                   {c.lastMessagePreview
                                     ? c.lastMessagePreview
                                     : c.type === 'dm'
@@ -964,7 +1036,7 @@ export default function App() {
                       </div>
                     </div>
                   ) : (
-                    <p className="text-sm text-slate-500 dark:text-slate-400">
+                    <p className="text-sm text-slate-500 dark:text-neutral-400">
                       Use + New Chat on the left to search anonymous users or join groups.
                     </p>
                   )}
@@ -998,7 +1070,7 @@ export default function App() {
       {notificationToast && (
         <div
           role="status"
-          className="fixed top-4 right-4 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-2xl bg-white dark:bg-[#161C2C] text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-white/[0.12] shadow-xl p-3 flex items-start gap-3 message-enter"
+          className="fixed top-4 right-4 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-2xl bg-white dark:bg-[#1C1C1E] text-slate-900 dark:text-neutral-100 border border-slate-200 dark:border-white/[0.12] shadow-xl p-3 flex items-start gap-3 message-enter"
         >
           <div className="h-9 w-9 rounded-full bg-[#2B84F6]/15 text-[#2B84F6] flex items-center justify-center shrink-0">
             <Bell className="w-4 h-4" />
@@ -1009,7 +1081,7 @@ export default function App() {
             className="min-w-0 flex-1 text-left"
           >
             <p className="text-xs font-semibold truncate">{notificationToast.title}</p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mt-0.5">
+            <p className="text-xs text-slate-500 dark:text-neutral-400 line-clamp-2 mt-0.5">
               {notificationToast.body}
             </p>
           </button>
@@ -1027,7 +1099,7 @@ export default function App() {
       {toast && (
         <div
           role="status"
-          className="fixed bottom-4 right-4 z-50 px-4 py-3 rounded-xl bg-slate-900 dark:bg-[#161C2C] text-white border border-white/[0.1] text-sm shadow-lg"
+          className="fixed bottom-4 right-4 z-50 px-4 py-3 rounded-xl bg-neutral-900 dark:bg-[#1C1C1E] text-white border border-white/[0.1] text-sm shadow-lg"
         >
           {toast}
         </div>

@@ -21,6 +21,7 @@ import { Avatar } from './Avatar';
 import {
   fetchMyJoinRequestsMap,
   fetchQuickContacts,
+  getDisplayName,
   requestJoinPrivateGroup,
   searchGroups,
   searchUsers,
@@ -36,6 +37,7 @@ import type {
 interface SidebarProps {
   profile: Profile;
   chats: ChatSummary[];
+  nicknames: Record<string, string>;
   unreadChatIds: Set<string>;
   unreadCounts: Record<string, number>;
   notifications: AppNotification[];
@@ -70,6 +72,7 @@ function formatShortTime(iso?: string | null): string {
 export const Sidebar: React.FC<SidebarProps> = ({
   profile,
   chats,
+  nicknames,
   unreadChatIds,
   unreadCounts,
   notifications,
@@ -296,13 +299,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (chatKindFilter === 'groups' && chat.type !== 'group') return false;
       if (chatKindFilter === 'dms' && chat.type !== 'dm') return false;
       if (!q) return true;
-      const title =
-        chat.type === 'dm'
-          ? chat.partner?.username ?? 'Direct Message'
-          : chat.name ?? 'Group';
-      return title.toLowerCase().includes(q);
+      if (chat.type === 'dm') {
+        const displayName = getDisplayName(
+          chat.partner?.id,
+          chat.partner?.username ?? 'Direct Message',
+          nicknames,
+        );
+        const handle = chat.partner?.username ?? '';
+        return (
+          displayName.toLowerCase().includes(q) || handle.toLowerCase().includes(q)
+        );
+      }
+      return (chat.name ?? 'Group').toLowerCase().includes(q);
     });
-  }, [chats, chatKindFilter, myChatsQuery]);
+  }, [chats, chatKindFilter, myChatsQuery, nicknames]);
 
   const showPeopleSection = browseFilter !== 'groups';
   const showGroupsSection = browseFilter !== 'people';
@@ -310,7 +320,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     (showPeopleSection && people.length > 0) || (showGroupsSection && groups.length > 0);
 
   return (
-    <aside className="h-full flex flex-col bg-white dark:bg-[#111622] border-r border-slate-200/80 dark:border-white/[0.08] relative">
+    <aside className="h-full flex flex-col bg-white dark:bg-[#121212] border-r border-slate-200/80 dark:border-white/[0.08] relative">
       {/* Top Bar */}
       <div className="px-4 sm:px-5 h-15 flex items-center justify-between gap-2 shrink-0">
         <button
@@ -340,7 +350,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className={`min-h-[40px] min-w-[40px] rounded-full flex items-center justify-center transition-colors ${
               searchBarOpen
                 ? 'bg-[#2B84F6]/12 text-[#2B84F6]'
-                : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
+                : 'text-slate-700 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
             }`}
           >
             <Search className="w-5 h-5" />
@@ -356,19 +366,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
               className={`relative min-h-[40px] min-w-[40px] rounded-full flex items-center justify-center transition-colors ${
                 notifOpen
                   ? 'bg-[#2B84F6]/12 text-[#2B84F6]'
-                  : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
+                  : 'text-slate-700 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
               }`}
             >
               <Bell className="w-5 h-5" />
               {unreadNotifCount > 0 && (
-                <span className="absolute top-1 right-1 min-w-[17px] h-[17px] px-1 rounded-full bg-[#2B84F6] text-white text-[10px] font-bold leading-none flex items-center justify-center tabular-nums ring-2 ring-white dark:ring-[#111622]">
+                <span className="absolute top-1 right-1 min-w-[17px] h-[17px] px-1 rounded-full bg-[#2B84F6] text-white text-[10px] font-bold leading-none flex items-center justify-center tabular-nums ring-2 ring-white dark:ring-[#121212]">
                   {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
                 </span>
               )}
             </button>
 
             {notifOpen && (
-              <div className="absolute right-0 top-12 z-40 w-76 sm:w-80 rounded-2xl bg-white dark:bg-[#161C2C] border border-slate-200 dark:border-white/[0.1] shadow-xl overflow-hidden">
+              <div className="absolute right-0 top-12 z-40 w-76 sm:w-80 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/[0.1] shadow-xl overflow-hidden">
                 <div className="px-3.5 py-2.5 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-2">
                   <span className="text-xs font-semibold tabular-nums">
                     Notifications {unreadNotifCount > 0 ? `(${unreadNotifCount})` : ''}
@@ -407,10 +417,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
                 {notifications.length === 0 ? (
                   <div className="px-4 py-8 text-center space-y-1">
-                    <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                    <p className="text-xs font-medium text-slate-600 dark:text-neutral-300">
                       You're all caught up
                     </p>
-                    <p className="text-xs text-slate-400 dark:text-slate-500">
+                    <p className="text-xs text-slate-400 dark:text-neutral-500">
                       New messages and private group requests will appear here.
                     </p>
                   </div>
@@ -452,16 +462,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 className={`text-xs truncate ${
                                   !item.read
                                     ? 'font-semibold text-slate-900 dark:text-white'
-                                    : 'font-medium text-slate-700 dark:text-slate-200'
+                                    : 'font-medium text-slate-700 dark:text-neutral-200'
                                 }`}
                               >
                                 {item.title}
                               </p>
-                              <span className="text-[11px] text-slate-400 dark:text-slate-500 tabular-nums shrink-0">
+                              <span className="text-[11px] text-slate-400 dark:text-neutral-500 tabular-nums shrink-0">
                                 {formatShortTime(item.createdAt)}
                               </span>
                             </div>
-                            <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mt-0.5">
+                            <p className="text-xs text-slate-500 dark:text-neutral-400 line-clamp-2 mt-0.5">
                               {item.body}
                             </p>
                           </div>
@@ -483,7 +493,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onClick={onOpenSettings}
             aria-label="Open settings"
             title="Settings"
-            className="min-h-[40px] min-w-[40px] rounded-full text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] flex items-center justify-center transition-colors"
+            className="min-h-[40px] min-w-[40px] rounded-full text-slate-700 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] flex items-center justify-center transition-colors"
           >
             <Settings className="w-5 h-5" />
           </button>
@@ -494,14 +504,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {tab === 'chats' && searchBarOpen && (
         <div className="px-4 pb-3 shrink-0">
           <div className="relative">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <Search className="w-4 h-4 text-slate-400 dark:text-neutral-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="search"
               value={myChatsQuery}
               onChange={(e) => setMyChatsQuery(e.target.value)}
               placeholder="Filter your conversations..."
               autoFocus
-              className="w-full min-h-[40px] pl-10 pr-4 py-1.5 rounded-2xl bg-slate-100 dark:bg-[#0B0E14] border border-transparent focus:border-[#2B84F6]/40 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6]"
+              className="w-full min-h-[40px] pl-10 pr-4 py-1.5 rounded-2xl bg-slate-100 dark:bg-black border border-transparent focus:border-[#2B84F6]/40 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6]"
             />
           </div>
         </div>
@@ -520,36 +530,41 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   className="flex flex-col items-center gap-1.5 shrink-0 group"
                   title="Find people or groups"
                 >
-                  <span className="h-13 w-13 rounded-full border-2 border-dashed border-slate-300 dark:border-white/[0.22] group-hover:border-[#2B84F6] text-slate-500 dark:text-slate-400 group-hover:text-[#2B84F6] flex items-center justify-center transition-colors">
+                  <span className="h-13 w-13 rounded-full border-2 border-dashed border-slate-300 dark:border-white/[0.22] group-hover:border-[#2B84F6] text-slate-500 dark:text-neutral-400 group-hover:text-[#2B84F6] flex items-center justify-center transition-colors">
                     <Plus className="w-5 h-5" />
                   </span>
-                  <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 max-w-[56px] truncate">
+                  <span className="text-[11px] font-medium text-slate-500 dark:text-neutral-400 max-w-[56px] truncate">
                     Find
                   </span>
                 </button>
 
-                {storyStripUsers.map((person) => (
-                  <button
-                    key={person.id}
-                    type="button"
-                    disabled={startingDmId === person.id || profile.banned}
-                    onClick={() => handleDm(person)}
-                    title={`Chat with ${person.username}`}
-                    className="flex flex-col items-center gap-1.5 shrink-0 group disabled:opacity-50"
-                  >
-                    <span className="rounded-full p-0.5 ring-2 ring-transparent group-hover:ring-[#2B84F6]/60 transition-all">
-                      <Avatar
-                        username={person.username}
-                        color={person.color}
-                        avatarUrl={person.avatarUrl}
-                        size="lg"
-                      />
-                    </span>
-                    <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300 max-w-[58px] truncate">
-                      {person.username.replace(/\d+$/, '')}
-                    </span>
-                  </button>
-                ))}
+                {storyStripUsers.map((person) => {
+                  const customNick = nicknames[person.id]?.trim();
+                  const shortLabel = customNick || person.username.replace(/\d+$/, '');
+                  const fullLabel = getDisplayName(person.id, person.username, nicknames);
+                  return (
+                    <button
+                      key={person.id}
+                      type="button"
+                      disabled={startingDmId === person.id || profile.banned}
+                      onClick={() => handleDm(person)}
+                      title={`Chat with ${fullLabel}`}
+                      className="flex flex-col items-center gap-1.5 shrink-0 group disabled:opacity-50"
+                    >
+                      <span className="rounded-full p-0.5 ring-2 ring-transparent group-hover:ring-[#2B84F6]/60 transition-all">
+                        <Avatar
+                          username={person.username}
+                          color={person.color}
+                          avatarUrl={person.avatarUrl}
+                          size="lg"
+                        />
+                      </span>
+                      <span className="text-[11px] font-medium text-slate-600 dark:text-neutral-300 max-w-[58px] truncate">
+                        {shortLabel}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -587,14 +602,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   onClick={() => setFilterOpen((prev) => !prev)}
                   aria-label="Filter conversations"
                   aria-expanded={filterOpen}
-                  className="min-h-[34px] min-w-[34px] rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
+                  className="min-h-[34px] min-w-[34px] rounded-full flex items-center justify-center text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
                 >
                   <MoreHorizontal className="w-5 h-5" />
                 </button>
               </div>
 
               {filterOpen && (
-                <div className="absolute right-4 top-9 z-30 w-44 rounded-2xl bg-white dark:bg-[#161C2C] border border-slate-200 dark:border-white/[0.1] shadow-xl p-1.5 space-y-0.5">
+                <div className="absolute right-4 top-9 z-30 w-44 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/[0.1] shadow-xl p-1.5 space-y-0.5">
                   {([
                     { key: 'all', label: `All chats (${chats.length})` },
                     { key: 'dms', label: 'Direct chats' },
@@ -610,7 +625,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       className={`w-full px-3 py-2 rounded-xl text-xs font-medium text-left transition-colors ${
                         chatKindFilter === opt.key
                           ? 'bg-[#2B84F6]/12 text-[#2B84F6] font-semibold'
-                          : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.05]'
+                          : 'text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.05]'
                       }`}
                     >
                       {opt.label}
@@ -631,15 +646,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
             ) : chats.length === 0 ? (
               <div className="px-6 py-10 text-center space-y-3">
-                <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <p className="text-sm font-semibold text-slate-700 dark:text-neutral-200">
                   No conversations yet
                 </p>
-                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                <p className="text-xs text-slate-500 dark:text-neutral-400 leading-relaxed">
                   Tap a buddy above or press + New Chat below to start a direct chat or join a group.
                 </p>
               </div>
             ) : filteredChats.length === 0 ? (
-              <p className="py-8 text-center text-xs text-slate-500 dark:text-slate-400">
+              <p className="py-8 text-center text-xs text-slate-500 dark:text-neutral-400">
                 No matching chats.
               </p>
             ) : (
@@ -651,15 +666,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   const isDm = chat.type === 'dm';
                   const isPrivate = chat.visibility === 'private';
                   const title = isDm
-                    ? chat.partner?.username ?? 'Direct Message'
+                    ? getDisplayName(
+                        chat.partner?.id,
+                        chat.partner?.username ?? 'Direct Message',
+                        nicknames,
+                      )
                     : chat.name ?? 'Group';
 
                   const sentByMe = chat.lastSenderId === profile.id;
+                  const senderDisplayName = chat.lastSenderUsername
+                    ? getDisplayName(chat.lastSenderId, chat.lastSenderUsername, nicknames)
+                    : null;
+
                   const previewText = chat.lastMessagePreview
                     ? sentByMe
                       ? chat.lastMessagePreview
-                      : !isDm && chat.lastSenderUsername
-                        ? `${chat.lastSenderUsername}: ${chat.lastMessagePreview}`
+                      : !isDm && senderDisplayName
+                        ? `${senderDisplayName}: ${chat.lastMessagePreview}`
                         : chat.lastMessagePreview
                     : isDm
                       ? 'Direct chat · 24h'
@@ -677,7 +700,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         className={`w-full min-h-[68px] px-3 py-2.5 rounded-2xl flex items-center gap-3 text-left transition-colors ${
                           isActive
                             ? 'bg-[#2B84F6]/10 dark:bg-[#2B84F6]/15 text-slate-900 dark:text-white'
-                            : 'hover:bg-slate-50 dark:hover:bg-white/[0.04] text-slate-800 dark:text-slate-200'
+                            : 'hover:bg-slate-50 dark:hover:bg-white/[0.04] text-slate-800 dark:text-neutral-200'
                         }`}
                       >
                         {isDm ? (
@@ -692,7 +715,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             className={`h-11 w-11 shrink-0 rounded-full flex items-center justify-center ${
                               isPrivate
                                 ? 'bg-amber-500/12 text-amber-600 dark:text-amber-400'
-                                : 'bg-slate-100 dark:bg-[#1B2336] text-slate-600 dark:text-slate-300'
+                                : 'bg-slate-100 dark:bg-[#242426] text-slate-600 dark:text-neutral-300'
                             }`}
                           >
                             {isPrivate ? (
@@ -717,7 +740,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 className={`text-xs tabular-nums shrink-0 ${
                                   isUnread
                                     ? 'font-semibold text-[#2B84F6]'
-                                    : 'text-slate-400 dark:text-slate-500'
+                                    : 'text-slate-400 dark:text-neutral-500'
                                 }`}
                               >
                                 {timeLabel}
@@ -729,8 +752,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             <p
                               className={`text-xs truncate flex items-center gap-1 min-w-0 ${
                                 isUnread
-                                  ? 'font-medium text-slate-800 dark:text-slate-200'
-                                  : 'text-slate-500 dark:text-slate-400'
+                                  ? 'font-medium text-slate-800 dark:text-neutral-200'
+                                  : 'text-slate-500 dark:text-neutral-400'
                               }`}
                             >
                               {sentByMe && chat.lastMessagePreview && (
@@ -772,17 +795,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
 
             <div className="relative">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <Search className="w-4 h-4 text-slate-400 dark:text-neutral-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search anonymous usernames or groups..."
-                className="w-full min-h-[42px] pl-10 pr-4 py-2 rounded-2xl bg-slate-100 dark:bg-[#0B0E14] border border-transparent focus:border-[#2B84F6]/40 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6]"
+                className="w-full min-h-[42px] pl-10 pr-4 py-2 rounded-2xl bg-slate-100 dark:bg-black border border-transparent focus:border-[#2B84F6]/40 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6]"
               />
             </div>
 
-            <div className="grid grid-cols-3 gap-1 p-1 rounded-2xl bg-slate-100 dark:bg-[#0B0E14]">
+            <div className="grid grid-cols-3 gap-1 p-1 rounded-2xl bg-slate-100 dark:bg-black">
               {(['all', 'people', 'groups'] as const).map((filterKey) => (
                 <button
                   key={filterKey}
@@ -790,8 +813,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   onClick={() => setBrowseFilter(filterKey)}
                   className={`min-h-[34px] px-2 py-1 rounded-xl text-xs font-semibold capitalize transition-colors whitespace-nowrap ${
                     browseFilter === filterKey
-                      ? 'bg-white dark:bg-[#161C2C] text-slate-900 dark:text-white shadow-xs'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      ? 'bg-white dark:bg-[#1C1C1E] text-slate-900 dark:text-white shadow-xs'
+                      : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-neutral-200'
                   }`}
                 >
                   {filterKey}
@@ -816,10 +839,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
             ) : !hasAnyResults ? (
               <div className="py-8 text-center space-y-1.5">
-                <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">
+                <p className="text-sm font-semibold text-slate-600 dark:text-neutral-300">
                   No matching results
                 </p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
+                <p className="text-xs text-slate-500 dark:text-neutral-400">
                   Try another anonymous handle or group name.
                 </p>
               </div>
@@ -827,16 +850,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="space-y-4">
                 {showPeopleSection && people.length > 0 && (
                   <div className="space-y-2">
-                    <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 px-1 tabular-nums">
+                    <p className="text-xs font-semibold text-slate-500 dark:text-neutral-400 px-1 tabular-nums">
                       People ({people.length})
                     </p>
                     <ul className="space-y-1.5">
                       {people.map((person) => {
                         const hasDm = existingDmByPartnerId.has(person.id);
+                        const displayName = getDisplayName(person.id, person.username, nicknames);
+                        const hasNick = Boolean(nicknames[person.id]?.trim());
                         return (
                           <li
                             key={person.id}
-                            className="p-2.5 rounded-2xl border border-slate-200/80 dark:border-white/[0.08] bg-slate-50/60 dark:bg-[#0B0E14]/50 flex items-center justify-between gap-2.5"
+                            className="p-2.5 rounded-2xl border border-slate-200/80 dark:border-white/[0.08] bg-slate-50/60 dark:bg-[#1C1C1E]/60 flex items-center justify-between gap-2.5"
                           >
                             <button
                               type="button"
@@ -851,10 +876,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 size="sm"
                               />
                               <div className="min-w-0">
-                                <p className="text-sm font-semibold truncate">{person.username}</p>
-                                {person.bio && (
-                                  <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                                    {person.bio}
+                                <p className="text-sm font-semibold truncate">{displayName}</p>
+                                {(hasNick || person.bio) && (
+                                  <p className="text-xs text-slate-500 dark:text-neutral-400 truncate">
+                                    {hasNick
+                                      ? `@${person.username}${person.bio ? ` · ${person.bio}` : ''}`
+                                      : person.bio}
                                   </p>
                                 )}
                               </div>
@@ -865,7 +892,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               disabled={startingDmId === person.id || profile.banned}
                               className={`min-h-[36px] px-3.5 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
                                 hasDm
-                                  ? 'bg-slate-200 dark:bg-white/[0.08] text-slate-800 dark:text-slate-100 hover:bg-slate-300 dark:hover:bg-white/[0.14]'
+                                  ? 'bg-slate-200 dark:bg-white/[0.08] text-slate-800 dark:text-neutral-100 hover:bg-slate-300 dark:hover:bg-white/[0.14]'
                                   : 'bg-[#2B84F6] hover:bg-[#1D74E8] text-white disabled:opacity-50'
                               }`}
                             >
@@ -887,7 +914,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
                 {showGroupsSection && groups.length > 0 && (
                   <div className="space-y-2">
-                    <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 px-1 tabular-nums">
+                    <p className="text-xs font-semibold text-slate-500 dark:text-neutral-400 px-1 tabular-nums">
                       Groups ({groups.length})
                     </p>
                     <ul className="space-y-2">
@@ -899,7 +926,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         return (
                           <li
                             key={group.id}
-                            className="p-3 rounded-2xl border border-slate-200/80 dark:border-white/[0.08] bg-slate-50/60 dark:bg-[#0B0E14]/50 space-y-2"
+                            className="p-3 rounded-2xl border border-slate-200/80 dark:border-white/[0.08] bg-slate-50/60 dark:bg-[#1C1C1E]/60 space-y-2"
                           >
                             <div className="flex items-start justify-between gap-2">
                               <div className="min-w-0">
@@ -907,11 +934,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                   {isPrivate ? (
                                     <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
                                   ) : (
-                                    <Hash className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                    <Hash className="w-3.5 h-3.5 text-slate-400 dark:text-neutral-500 shrink-0" />
                                   )}
                                   <h3 className="text-sm font-semibold truncate">{group.name}</h3>
                                 </div>
-                                <p className="text-xs text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5 tabular-nums mt-0.5">
+                                <p className="text-xs text-slate-500 dark:text-neutral-400 inline-flex items-center gap-1.5 tabular-nums mt-0.5">
                                   <Users className="w-3 h-3" />
                                   <span>
                                     {group.memberCount}{' '}
@@ -932,7 +959,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 }
                                 className={`min-h-[36px] px-3.5 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
                                   group.isMember
-                                    ? 'bg-slate-200 dark:bg-white/[0.08] text-slate-800 dark:text-slate-100 hover:bg-slate-300 dark:hover:bg-white/[0.14]'
+                                    ? 'bg-slate-200 dark:bg-white/[0.08] text-slate-800 dark:text-neutral-100 hover:bg-slate-300 dark:hover:bg-white/[0.14]'
                                     : isPending
                                       ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 cursor-default'
                                       : isPrivate
@@ -957,7 +984,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               </button>
                             </div>
                             {group.description && (
-                              <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
+                              <p className="text-xs text-slate-600 dark:text-neutral-400 line-clamp-2">
                                 {group.description}
                               </p>
                             )}
@@ -977,7 +1004,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="pointer-events-none absolute bottom-3.5 left-4 right-4 z-20 flex justify-center">
         <nav
           aria-label="Primary navigation"
-          className="pointer-events-auto w-full max-w-[300px] rounded-full bg-white/95 dark:bg-[#161C2C]/95 backdrop-blur-md border border-slate-200/90 dark:border-white/[0.1] shadow-lg shadow-slate-900/[0.08] px-2.5 py-1.5 flex items-center justify-between gap-2"
+          className="pointer-events-auto w-full max-w-[300px] rounded-full bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border border-slate-200/90 dark:border-white/[0.1] shadow-lg shadow-slate-900/[0.08] px-2.5 py-1.5 flex items-center justify-between gap-2"
         >
           <button
             type="button"
@@ -990,7 +1017,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className={`min-h-[44px] min-w-[44px] rounded-full flex items-center justify-center transition-colors ${
               tab === 'chats'
                 ? 'text-slate-900 dark:text-white bg-slate-100 dark:bg-white/[0.08]'
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                : 'text-slate-500 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
             <Home className="w-5 h-5" />
@@ -1010,7 +1037,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onClick={() => onOpenProfile(profile.id)}
             aria-label="Your profile"
             title={`${profile.username} profile`}
-            className="min-h-[44px] min-w-[44px] rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors"
+            className="min-h-[44px] min-w-[44px] rounded-full flex items-center justify-center text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition-colors"
           >
             {profile.avatarUrl ? (
               <Avatar

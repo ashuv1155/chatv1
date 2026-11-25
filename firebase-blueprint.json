@@ -6,7 +6,7 @@
       "type": "object",
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "username": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[A-Za-z0-9]+$" },
+        "username": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[A-Za-z0-9_]+$" },
         "color": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^#[0-9A-Fa-f]{6}$" },
         "bio": { "type": "string", "maxLength": 240 },
         "avatarUrl": { "type": "string", "maxLength": 220000 },
@@ -51,6 +51,18 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["blockerId", "blockedId", "blockedUsername", "blockedColor", "createdAt"]
+    },
+    "FriendNickname": {
+      "title": "FriendNickname",
+      "description": "Private custom nickname assigned by a user to another user.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "targetUserId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "nickname": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "targetUserId", "nickname", "updatedAt"]
     },
     "RateLimitState": {
       "title": "RateLimitState",
@@ -214,6 +226,10 @@
     "/profiles/{userId}/blocks/{blockedUserId}": {
       "schema": { "$ref": "#/entities/BlockRecord" },
       "description": "Users blocked by userId."
+    },
+    "/profiles/{userId}/nicknames/{targetUserId}": {
+      "schema": { "$ref": "#/entities/FriendNickname" },
+      "description": "Private nicknames set by userId for friends."
     },
     "/rateLimits/{userId}": {
       "schema": { "$ref": "#/entities/RateLimitState" },

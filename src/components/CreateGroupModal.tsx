@@ -62,7 +62,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
       aria-labelledby="create-group-title"
     >
       <div
-        className="w-full max-w-md rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 space-y-5"
+        className="w-full max-w-md rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.1] p-6 space-y-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
@@ -73,7 +73,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
             type="button"
             onClick={onClose}
             aria-label="Close dialog"
-            className="min-h-[44px] min-w-[44px] -mr-2 rounded-xl flex items-center justify-center text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors"
+            className="min-h-[44px] min-w-[44px] -mr-2 rounded-xl flex items-center justify-center text-slate-500 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -89,14 +89,14 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
                 className={`p-3 rounded-xl border text-left transition-colors ${
                   visibility === 'public'
                     ? 'border-[#2B84F6] bg-[#2B84F6]/10 text-slate-900 dark:text-white'
-                    : 'border-slate-200 dark:border-white/[0.1] hover:bg-slate-50 dark:hover:bg-white/[0.04] text-slate-600 dark:text-slate-300'
+                    : 'border-slate-200 dark:border-white/[0.1] hover:bg-slate-50 dark:hover:bg-white/[0.05] text-slate-600 dark:text-neutral-300'
                 }`}
               >
                 <div className="flex items-center gap-2 text-sm font-semibold">
                   <Globe className="w-4 h-4 text-[#2B84F6] shrink-0" />
                   <span>Public</span>
                 </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-snug">
+                <p className="text-xs text-slate-500 dark:text-neutral-400 mt-1 leading-snug">
                   Anyone can find and join immediately.
                 </p>
               </button>
@@ -107,14 +107,14 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
                 className={`p-3 rounded-xl border text-left transition-colors ${
                   visibility === 'private'
                     ? 'border-[#2B84F6] bg-[#2B84F6]/10 text-slate-900 dark:text-white'
-                    : 'border-slate-200 dark:border-white/[0.1] hover:bg-slate-50 dark:hover:bg-white/[0.04] text-slate-600 dark:text-slate-300'
+                    : 'border-slate-200 dark:border-white/[0.1] hover:bg-slate-50 dark:hover:bg-white/[0.05] text-slate-600 dark:text-neutral-300'
                 }`}
               >
                 <div className="flex items-center gap-2 text-sm font-semibold">
                   <Lock className="w-4 h-4 text-amber-500 shrink-0" />
                   <span>Private</span>
                 </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-snug">
+                <p className="text-xs text-slate-500 dark:text-neutral-400 mt-1 leading-snug">
                   Requires your approval to join.
                 </p>
               </button>
@@ -133,7 +133,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
               maxLength={60}
               placeholder="Late Night Thoughts"
               autoFocus
-              className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0B0E14] border border-slate-200 dark:border-white/[0.1] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6]"
+              className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/[0.1] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6]"
             />
           </div>
 
@@ -148,7 +148,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
               maxLength={200}
               rows={3}
               placeholder="What is this room about?"
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0B0E14] border border-slate-200 dark:border-white/[0.1] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6] resize-none"
+              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/[0.1] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6] resize-none"
             />
           </div>
 
@@ -162,7 +162,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="min-h-[44px] px-4 py-2 rounded-full text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors"
+              className="min-h-[44px] px-4 py-2 rounded-full text-sm font-medium text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
             >
               Cancel
             </button>

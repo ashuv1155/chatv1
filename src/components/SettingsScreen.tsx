@@ -1,11 +1,13 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import {
   ArrowLeft,
   Bell,
+  Check,
   Laptop,
   LogOut,
   MessageSquareMore,
   Moon,
+  Pencil,
   RefreshCw,
   ShieldAlert,
   Sun,
@@ -31,28 +33,13 @@ interface SettingsScreenProps {
   onChangeTheme: (pref: ThemePreference) => void;
   onUpdateNotificationSettings: (next: NotificationSettings) => void;
   onRequestBrowserPermission: () => Promise<void>;
+  onSetUsername: (nextUsername: string) => Promise<void>;
   onRotateUsername: () => Promise<void>;
   onUnblock: (blockedId: string) => Promise<void>;
   onOpenProfile: () => void;
   onOpenTerms: () => void;
   onSignOut: () => Promise<void>;
   onBack: () => void;
-}
-
-function getCooldownText(lastChangedAt: string | null): string | null {
-  if (!lastChangedAt) return null;
-  const lastMs = new Date(lastChangedAt).getTime();
-  if (Number.isNaN(lastMs)) return null;
-  const nextAllowedMs = lastMs + 24 * 60 * 60 * 1000;
-  const diffMs = nextAllowedMs - Date.now();
-  if (diffMs <= 0) return null;
-
-  const hours = Math.floor(diffMs / (1000 * 60 * 60));
-  const minutes = Math.ceil((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-  if (hours > 0) {
-    return `Available again in ${hours}h ${minutes}m`;
-  }
-  return `Available again in ${minutes}m`;
 }
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
@@ -64,6 +51,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onChangeTheme,
   onUpdateNotificationSettings,
   onRequestBrowserPermission,
+  onSetUsername,
   onRotateUsername,
   onUnblock,
   onOpenProfile,
@@ -71,23 +59,40 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onSignOut,
   onBack,
 }) => {
+  const [editingUsername, setEditingUsername] = useState(false);
+  const [usernameDraft, setUsernameDraft] = useState(profile.username);
+  const [savingUsername, setSavingUsername] = useState(false);
   const [rotating, setRotating] = useState(false);
   const [unblockingId, setUnblockingId] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [requestingPerm, setRequestingPerm] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
-  const cooldownText = useMemo(
-    () => getCooldownText(profile.lastUsernameChangeAt),
-    [profile.lastUsernameChangeAt],
-  );
+  const handleSaveUsername = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFeedback(null);
+    setSavingUsername(true);
+    try {
+      await onSetUsername(usernameDraft);
+      setEditingUsername(false);
+      setFeedback({ type: 'success', text: 'Your username has been updated.' });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to update username.',
+      });
+    } finally {
+      setSavingUsername(false);
+    }
+  };
 
   const handleRotate = async () => {
     setFeedback(null);
     setRotating(true);
     try {
       await onRotateUsername();
-      setFeedback({ type: 'success', text: 'Your anonymous handle has been updated.' });
+      setEditingUsername(false);
+      setFeedback({ type: 'success', text: 'Your anonymous handle has been randomized.' });
     } catch (err) {
       setFeedback({
         type: 'error',
@@ -117,13 +122,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-slate-100">
-      <header className="sticky top-0 z-20 bg-slate-50/90 dark:bg-[#0B0E14]/90 backdrop-blur-md border-b border-slate-200 dark:border-white/[0.08]">
+    <div className="min-h-screen bg-slate-50 dark:bg-black text-slate-900 dark:text-neutral-100">
+      <header className="sticky top-0 z-20 bg-slate-50/90 dark:bg-black/90 backdrop-blur-md border-b border-slate-200 dark:border-white/[0.1]">
         <div className="max-w-2xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
           <button
             type="button"
             onClick={onBack}
-            className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white min-h-[44px] px-2 -ml-2 rounded-lg transition-colors whitespace-nowrap"
+            className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 dark:text-neutral-300 hover:text-slate-900 dark:hover:text-white min-h-[44px] px-2 -ml-2 rounded-lg transition-colors whitespace-nowrap"
           >
             <ArrowLeft className="w-4 h-4" />
             <span>Back to chats</span>
@@ -134,7 +139,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       </header>
 
       <main className="max-w-2xl mx-auto px-4 sm:px-6 py-8 space-y-6">
-        <section className="rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 space-y-5">
+        <section className="rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.1] p-6 space-y-5">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-4 min-w-0">
               <Avatar
@@ -144,8 +149,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 size="lg"
               />
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Your anonymous handle
+                <p className="text-xs font-medium text-slate-500 dark:text-neutral-400">
+                  Your handle
                 </p>
                 <h1 className="text-xl font-bold tracking-tight truncate">{profile.username}</h1>
               </div>
@@ -153,7 +158,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             <button
               type="button"
               onClick={onOpenProfile}
-              className="min-h-[40px] px-3.5 py-1.5 rounded-xl border border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+              className="min-h-[40px] px-3.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.12] hover:bg-slate-100 dark:hover:bg-white/[0.06] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
             >
               <UserCircle2 className="w-4 h-4" />
               <span>Edit profile</span>
@@ -180,26 +185,76 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             </div>
           )}
 
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-4 border-t border-slate-200 dark:border-white/[0.08]">
-            <div className="space-y-0.5">
-              <p className="text-sm font-medium">Rotate identity</p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
-                {cooldownText ?? 'Allowed once every 24 hours'}
-              </p>
+          <div className="pt-4 border-t border-slate-200 dark:border-white/[0.1] space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-0.5">
+                <p className="text-sm font-medium">Username</p>
+                <p className="text-xs text-slate-500 dark:text-neutral-400">
+                  Set a custom handle or generate a random one
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {!editingUsername && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUsernameDraft(profile.username);
+                      setEditingUsername(true);
+                    }}
+                    disabled={profile.banned}
+                    className="min-h-[40px] px-4 py-2 rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    <span>Set username</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleRotate}
+                  disabled={rotating || profile.banned}
+                  className="min-h-[40px] px-4 py-2 rounded-full bg-slate-900 dark:bg-[#242426] hover:bg-slate-800 dark:hover:bg-[#2E2E32] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${rotating ? 'animate-spin' : ''}`} />
+                  <span>{rotating ? 'Generating...' : 'Randomize'}</span>
+                </button>
+              </div>
             </div>
-            <button
-              type="button"
-              onClick={handleRotate}
-              disabled={rotating || cooldownText !== null || profile.banned}
-              className="min-h-[44px] px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0"
-            >
-              <RefreshCw className={`w-4 h-4 ${rotating ? 'animate-spin' : ''}`} />
-              <span>{rotating ? 'Generating...' : 'New random username'}</span>
-            </button>
+
+            {editingUsername && (
+              <form onSubmit={handleSaveUsername} className="space-y-2.5">
+                <input
+                  type="text"
+                  value={usernameDraft}
+                  onChange={(e) => setUsernameDraft(e.target.value)}
+                  minLength={3}
+                  maxLength={32}
+                  placeholder="Enter username (3–32 chars, letters/numbers/_)"
+                  autoFocus
+                  className="w-full min-h-[42px] px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/[0.1] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6]"
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingUsername(false)}
+                    className="min-h-[38px] px-3.5 py-1.5 rounded-full text-xs font-medium text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingUsername || usernameDraft.trim().length < 3}
+                    className="min-h-[38px] px-4 py-1.5 rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{savingUsername ? 'Saving...' : 'Save'}</span>
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </section>
 
-        <section className="rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 space-y-5">
+        <section className="rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.1] p-6 space-y-5">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-sm font-semibold">Notifications & Typing</h2>
             {browserNotifPermission === 'default' && (
@@ -214,7 +269,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                     setRequestingPerm(false);
                   }
                 }}
-                className="min-h-[36px] px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                className="min-h-[36px] px-3.5 py-1 rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
               >
                 <Bell className="w-3.5 h-3.5" />
                 <span>{requestingPerm ? 'Requesting...' : 'Allow browser alerts'}</span>
@@ -225,10 +280,10 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           <div className="divide-y divide-slate-200 dark:divide-white/[0.08]">
             <div className="pb-4 flex items-center justify-between gap-4">
               <div className="flex items-start gap-3 min-w-0">
-                <Bell className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5" />
+                <Bell className="w-4 h-4 text-[#2B84F6] shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-medium">Browser notifications</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                  <p className="text-xs text-slate-500 dark:text-neutral-400">
                     {browserNotifPermission === 'denied'
                       ? 'Blocked in browser settings. Allow notifications in site permissions to enable desktop alerts.'
                       : browserNotifPermission === 'unsupported'
@@ -254,8 +309,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 }}
                 className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
                   notificationSettings.browserNotifications
-                    ? 'bg-indigo-600'
-                    : 'bg-slate-300 dark:bg-white/[0.15]'
+                    ? 'bg-[#2B84F6]'
+                    : 'bg-slate-300 dark:bg-white/[0.18]'
                 }`}
               >
                 <span
@@ -271,7 +326,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 <Volume2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-medium">Notification sound</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                  <p className="text-xs text-slate-500 dark:text-neutral-400">
                     Play a subtle chime when incoming messages or requests arrive
                   </p>
                 </div>
@@ -289,8 +344,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 }
                 className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
                   notificationSettings.soundEnabled
-                    ? 'bg-indigo-600'
-                    : 'bg-slate-300 dark:bg-white/[0.15]'
+                    ? 'bg-[#2B84F6]'
+                    : 'bg-slate-300 dark:bg-white/[0.18]'
                 }`}
               >
                 <span
@@ -306,7 +361,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 <MessageSquareMore className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-medium">Typing effects</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                  <p className="text-xs text-slate-500 dark:text-neutral-400">
                     Show live typing indicators in open conversations and broadcast when you type
                   </p>
                 </div>
@@ -324,8 +379,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 }
                 className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
                   notificationSettings.typingIndicators
-                    ? 'bg-indigo-600'
-                    : 'bg-slate-300 dark:bg-white/[0.15]'
+                    ? 'bg-[#2B84F6]'
+                    : 'bg-slate-300 dark:bg-white/[0.18]'
                 }`}
               >
                 <span
@@ -338,17 +393,17 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </div>
         </section>
 
-        <section className="rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 space-y-5">
+        <section className="rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.1] p-6 space-y-5">
           <h2 className="text-sm font-semibold">Appearance & Legal</h2>
 
           <div className="space-y-2.5">
             <div>
               <p className="text-sm font-medium">Theme</p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Follows your device theme by default
+              <p className="text-xs text-slate-500 dark:text-neutral-400">
+                Follows your device theme by default (black & grey in dark mode)
               </p>
             </div>
-            <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-[#0B0E14]">
+            <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-black">
               {([
                 { key: 'system', label: 'Device', Icon: Laptop },
                 { key: 'light', label: 'Light', Icon: Sun },
@@ -362,8 +417,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                     onClick={() => onChangeTheme(key)}
                     className={`min-h-[40px] px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
                       active
-                        ? 'bg-white dark:bg-[#161C2C] text-slate-900 dark:text-white shadow-xs'
-                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                        ? 'bg-white dark:bg-[#242426] text-slate-900 dark:text-white shadow-xs'
+                        : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-neutral-200'
                     }`}
                   >
                     <Icon className="w-3.5 h-3.5" />
@@ -374,33 +429,33 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             </div>
           </div>
 
-          <div className="pt-4 border-t border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-4">
+          <div className="pt-4 border-t border-slate-200 dark:border-white/[0.1] flex items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium">Terms and Privacy Policy</p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
+              <p className="text-xs text-slate-500 dark:text-neutral-400">
                 24-hour message auto-delete and anonymity commitments
               </p>
             </div>
             <button
               type="button"
               onClick={onOpenTerms}
-              className="min-h-[44px] px-3 py-2 text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:underline whitespace-nowrap shrink-0"
+              className="min-h-[44px] px-3 py-2 text-sm font-medium text-[#2B84F6] hover:underline whitespace-nowrap shrink-0"
             >
               Read policy
             </button>
           </div>
         </section>
 
-        <section className="rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 space-y-4">
+        <section className="rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.1] p-6 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold">Blocked users</h2>
-            <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+            <span className="text-xs text-slate-500 dark:text-neutral-400 tabular-nums">
               {blocks.length} blocked
             </span>
           </div>
 
           {blocks.length === 0 ? (
-            <p className="text-sm text-slate-500 dark:text-slate-400">
+            <p className="text-sm text-slate-500 dark:text-neutral-400">
               You have not blocked anyone.
             </p>
           ) : (
@@ -424,7 +479,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                     type="button"
                     onClick={() => handleUnblock(entry.blockedId)}
                     disabled={unblockingId === entry.blockedId}
-                    className="min-h-[40px] px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                    className="min-h-[40px] px-3.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.12] hover:bg-slate-100 dark:hover:bg-white/[0.06] text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
                   >
                     <UserX className="w-3.5 h-3.5" />
                     <span>{unblockingId === entry.blockedId ? 'Unblocking...' : 'Unblock'}</span>
@@ -440,7 +495,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             type="button"
             onClick={handleSignOut}
             disabled={signingOut}
-            className="w-full min-h-[48px] px-5 py-3 rounded-xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:text-red-300 font-semibold text-sm inline-flex items-center justify-center gap-2 transition-colors"
+            className="w-full min-h-[48px] px-5 py-3 rounded-full border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:text-red-300 font-semibold text-sm inline-flex items-center justify-center gap-2 transition-colors"
           >
             <LogOut className="w-4 h-4" />
             <span>{signingOut ? 'Signing out...' : 'Sign out'}</span>

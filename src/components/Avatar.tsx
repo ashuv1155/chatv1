@@ -45,7 +45,7 @@ export const Avatar: React.FC<AvatarProps> = ({
         alt={`${username} avatar`}
         referrerPolicy="no-referrer"
         onError={() => setImgFailed(true)}
-        className={`${sizeClass} shrink-0 object-cover border border-slate-200 dark:border-white/[0.1] select-none bg-slate-200 dark:bg-slate-800`}
+        className={`${sizeClass} shrink-0 object-cover border border-slate-200 dark:border-white/[0.1] select-none bg-slate-200 dark:bg-neutral-800`}
       />
     );
   }

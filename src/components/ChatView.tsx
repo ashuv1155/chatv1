@@ -23,6 +23,7 @@ import {
   Plus,
   Send,
   ShieldBan,
+  Tag,
   Trash2,
   UserPlus,
   Users,
@@ -39,6 +40,7 @@ import {
   fetchChatMembers,
   fetchChatMetadata,
   fetchOlderMessages,
+  getDisplayName,
   hasViewedOnceMessage,
   openViewOncePhoto,
   sendMessage,
@@ -68,6 +70,7 @@ interface ChatViewProps {
   chat: ChatSummary;
   allChats: ChatSummary[];
   currentUser: Profile;
+  nicknames: Record<string, string>;
   blockedUserIds: Set<string>;
   typingEnabled: boolean;
   onChatViewed?: (chatId: string) => void;
@@ -76,6 +79,8 @@ interface ChatViewProps {
   onLeaveGroup: (chatId: string) => Promise<void>;
   onStartDm: (targetUserId: string) => Promise<void>;
   onOpenProfile: (userId: string) => void;
+  onSetNickname: (targetUserId: string, nickname: string) => Promise<void>;
+  onRemoveNickname: (targetUserId: string) => Promise<void>;
   onRequestReport: (params: {
     userId: string | null;
     label: string;
@@ -130,6 +135,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   chat,
   allChats,
   currentUser,
+  nicknames,
   blockedUserIds,
   typingEnabled,
   onChatViewed,
@@ -138,6 +144,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onLeaveGroup,
   onStartDm,
   onOpenProfile,
+  onSetNickname,
+  onRemoveNickname,
   onRequestReport,
   onRequestBlock,
   onToast,
@@ -179,6 +187,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [showMoreEmojis, setShowMoreEmojis] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+
+  const [nicknameTarget, setNicknameTarget] = useState<{
+    userId: string;
+    username: string;
+    color?: string;
+  } | null>(null);
+  const [nicknameInput, setNicknameInput] = useState('');
+  const [savingNickname, setSavingNickname] = useState(false);
+  const [nicknameError, setNicknameError] = useState<string | null>(null);
 
   // Attachment Blob URL caches and lightbox states
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
@@ -852,33 +869,80 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
+  const openNicknameModal = (userId: string, username: string, color?: string) => {
+    setNicknameTarget({ userId, username, color });
+    setNicknameInput(nicknames[userId] ?? '');
+    setNicknameError(null);
+  };
+
+  const handleSaveNicknameModal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!nicknameTarget || savingNickname) return;
+    setSavingNickname(true);
+    setNicknameError(null);
+    try {
+      await onSetNickname(nicknameTarget.userId, nicknameInput);
+      onToast(`Nickname updated for @${nicknameTarget.username}.`);
+      setNicknameTarget(null);
+    } catch (err) {
+      setNicknameError(err instanceof Error ? err.message : 'Could not save nickname.');
+    } finally {
+      setSavingNickname(false);
+    }
+  };
+
+  const handleClearNicknameModal = async () => {
+    if (!nicknameTarget || savingNickname) return;
+    setSavingNickname(true);
+    setNicknameError(null);
+    try {
+      await onRemoveNickname(nicknameTarget.userId);
+      onToast(`Nickname cleared for @${nicknameTarget.username}.`);
+      setNicknameTarget(null);
+    } catch (err) {
+      setNicknameError(err instanceof Error ? err.message : 'Could not remove nickname.');
+    } finally {
+      setSavingNickname(false);
+    }
+  };
+
+  const dmDisplayName = dmPartner
+    ? getDisplayName(dmPartner.id, dmPartner.username, nicknames)
+    : 'Direct Message';
+  const dmHasNickname = Boolean(dmPartner && nicknames[dmPartner.id]?.trim());
+
   const headerTitle =
-    chat.type === 'dm'
-      ? dmPartner?.username ?? 'Direct Message'
-      : chat.name ?? 'Group';
+    chat.type === 'dm' ? dmDisplayName : chat.name ?? 'Group';
+
+  const firstTypistName =
+    activeTypists.length > 0
+      ? getDisplayName(activeTypists[0].userId, activeTypists[0].username, nicknames)
+      : '';
 
   const headerSubtitle =
     activeTypists.length > 0
       ? activeTypists.length === 1
-        ? `${activeTypists[0].username} is typing...`
+        ? `${firstTypistName} is typing...`
         : `${activeTypists.length} people typing...`
       : chat.type === 'dm'
-        ? 'Direct chat · 24h auto-delete'
+        ? dmHasNickname && dmPartner
+          ? `@${dmPartner.username} · 24h auto-delete`
+          : 'Direct chat · 24h auto-delete'
         : `${members.length} ${members.length === 1 ? 'member' : 'members'} · ${
             isPrivateGroup ? 'Private' : 'Public'
           } · 24h`;
 
   return (
-    <div className="h-full flex bg-white dark:bg-[#0B0E14] relative overflow-hidden">
+    <div className="h-full flex bg-white dark:bg-black relative overflow-hidden">
       <div className="flex-1 flex flex-col min-w-0 h-full">
         {/* Clean Modern Top Header */}
-        <header className="h-15 px-3 sm:px-5 border-b border-slate-200/80 dark:border-white/[0.08] bg-white/90 dark:bg-[#111622]/90 backdrop-blur-md flex items-center justify-between gap-3 shrink-0">
+        <header className="h-15 px-3 sm:px-5 border-b border-slate-200/80 dark:border-white/[0.08] bg-white/90 dark:bg-[#121212]/90 backdrop-blur-md flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
               onClick={onBackMobile}
               aria-label="Back to chat list"
-              className="lg:hidden min-h-[44px] min-w-[44px] -ml-1.5 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+              className="lg:hidden min-h-[44px] min-w-[44px] -ml-1.5 rounded-full flex items-center justify-center text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
@@ -888,7 +952,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 onClick={() => onOpenProfile(dmPartner.id)}
                 className="flex items-center gap-3 min-w-0 text-left hover:opacity-80 transition-opacity"
-                title={`View ${dmPartner.username}'s profile`}
+                title={`View ${dmDisplayName}'s profile`}
               >
                 <Avatar
                   username={dmPartner.username}
@@ -904,7 +968,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     className={`text-xs truncate tabular-nums ${
                       activeTypists.length > 0
                         ? 'text-[#2B84F6] font-medium'
-                        : 'text-slate-500 dark:text-slate-400'
+                        : 'text-slate-500 dark:text-neutral-400'
                     }`}
                   >
                     {headerSubtitle}
@@ -917,7 +981,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${
                     isPrivateGroup
                       ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
-                      : 'bg-slate-100 dark:bg-[#1B2336] text-slate-600 dark:text-slate-300'
+                      : 'bg-slate-100 dark:bg-[#242426] text-slate-600 dark:text-neutral-300'
                   }`}
                 >
                   {isPrivateGroup ? <Lock className="w-4 h-4" /> : <Hash className="w-4 h-4" />}
@@ -930,7 +994,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     className={`text-xs truncate tabular-nums ${
                       activeTypists.length > 0
                         ? 'text-[#2B84F6] font-medium'
-                        : 'text-slate-500 dark:text-slate-400'
+                        : 'text-slate-500 dark:text-neutral-400'
                     }`}
                   >
                     {headerSubtitle}
@@ -952,6 +1016,27 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </button>
             )}
 
+            {chat.type === 'dm' && dmPartner && (
+              <button
+                type="button"
+                onClick={() =>
+                  openNicknameModal(dmPartner.id, dmPartner.username, dmPartner.color)
+                }
+                title={dmHasNickname ? 'Edit friend nickname' : 'Set friend nickname'}
+                aria-label={dmHasNickname ? 'Edit friend nickname' : 'Set friend nickname'}
+                className={`min-h-[38px] px-2.5 py-1.5 rounded-full border text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                  dmHasNickname
+                    ? 'border-[#2B84F6]/40 bg-[#2B84F6]/10 text-[#2B84F6]'
+                    : 'border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-700 dark:text-neutral-300'
+                }`}
+              >
+                <Tag className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">
+                  {dmHasNickname ? 'Nickname' : 'Nickname'}
+                </span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() =>
@@ -962,7 +1047,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               }
               title="Report"
               aria-label="Report"
-              className="min-h-[38px] px-2.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-medium text-slate-700 dark:text-slate-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              className="min-h-[38px] px-2.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-medium text-slate-700 dark:text-neutral-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
             >
               <Flag className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Report</span>
@@ -995,7 +1080,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               className={`min-h-[38px] px-3 py-1.5 rounded-full border text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap tabular-nums ${
                 membersOpen
                   ? 'border-[#2B84F6]/40 bg-[#2B84F6]/10 text-[#2B84F6]'
-                  : 'border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-700 dark:text-slate-300'
+                  : 'border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-700 dark:text-neutral-300'
               }`}
             >
               <Users className="w-3.5 h-3.5" />
@@ -1008,7 +1093,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 onClick={handleLeave}
                 disabled={leaving}
                 title="Leave group"
-                className="min-h-[38px] px-2.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 text-xs font-medium text-slate-600 dark:text-slate-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                className="min-h-[38px] px-2.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 text-xs font-medium text-slate-600 dark:text-neutral-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">{leaving ? 'Leaving...' : 'Leave'}</span>
@@ -1029,7 +1114,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 onClick={handleLoadOlder}
                 disabled={loadingOlder}
-                className="min-h-[36px] px-3.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#111622] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-medium text-slate-600 dark:text-slate-300 inline-flex items-center gap-1.5 transition-colors"
+                className="min-h-[36px] px-3.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#121212] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-medium text-slate-600 dark:text-neutral-300 inline-flex items-center gap-1.5 transition-colors"
               >
                 <ChevronUp className="w-3.5 h-3.5" />
                 <span>{loadingOlder ? 'Loading older...' : 'Load older messages'}</span>
@@ -1054,10 +1139,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </div>
           ) : visibleMessages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center py-12 space-y-2">
-              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+              <p className="text-sm font-semibold text-slate-700 dark:text-neutral-200">
                 No active messages
               </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs leading-relaxed">
+              <p className="text-xs text-slate-500 dark:text-neutral-400 max-w-xs leading-relaxed">
                 Say hello as {currentUser.username}. Messages auto-delete after 24 hours.
               </p>
             </div>
@@ -1065,6 +1150,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
             visibleMessages.map((msg, idx) => {
               const isOwn = msg.senderId === currentUser.id;
               const senderProfile = memberById.get(msg.senderId);
+              const senderDisplayName = getDisplayName(
+                msg.senderId,
+                senderProfile?.username ?? msg.senderUsername,
+                nicknames,
+              );
               const prevMsg = idx > 0 ? visibleMessages[idx - 1] : null;
               const showDayDivider =
                 !prevMsg || formatMessageDay(prevMsg.createdAt) !== formatMessageDay(msg.createdAt);
@@ -1073,12 +1163,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
               const msgCreatedMs = new Date(msg.createdAt).getTime();
               const isReadByPeer = isOwn && !msg.pending && maxPeerReadMs >= msgCreatedMs;
               const showGroupSenderName = !isOwn && chat.type === 'group';
+              const repliedSource = msg.replyTo
+                ? visibleMessages.find((m) => m.id === msg.replyTo!.messageId)
+                : null;
+              const replyAuthorName = msg.replyTo
+                ? repliedSource
+                  ? getDisplayName(
+                      repliedSource.senderId,
+                      msg.replyTo.senderUsername,
+                      nicknames,
+                    )
+                  : msg.replyTo.senderUsername
+                : '';
 
               return (
                 <React.Fragment key={msg.id}>
                   {showDayDivider && (
                     <div className="flex items-center justify-center py-2">
-                      <span className="text-xs font-medium text-slate-400 dark:text-slate-500 tabular-nums">
+                      <span className="text-xs font-medium text-slate-400 dark:text-neutral-500 tabular-nums">
                         {formatMessageDay(msg.createdAt)}
                       </span>
                     </div>
@@ -1094,7 +1196,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       <button
                         type="button"
                         onClick={() => onOpenProfile(msg.senderId)}
-                        title={`View ${msg.senderUsername}'s profile`}
+                        title={`View ${senderDisplayName}'s profile`}
                         className="shrink-0 rounded-full hover:opacity-85 transition-opacity mb-5"
                       >
                         <Avatar
@@ -1115,9 +1217,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <button
                           type="button"
                           onClick={() => onOpenProfile(msg.senderId)}
-                          className="text-xs font-semibold text-slate-600 dark:text-slate-400 hover:underline px-1 mb-1"
+                          className="text-xs font-semibold text-slate-600 dark:text-neutral-400 hover:underline px-1 mb-1"
                         >
-                          {msg.senderUsername}
+                          {senderDisplayName}
                         </button>
                       )}
 
@@ -1144,13 +1246,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           className={`cursor-pointer select-text px-4 py-2.5 transition-opacity ${
                             isOwn
                               ? 'bg-[#2B84F6] text-white rounded-2xl rounded-tr-sm'
-                              : 'bg-[#F3F4F6] dark:bg-[#192132] text-slate-900 dark:text-slate-100 rounded-2xl rounded-tl-sm'
+                              : 'bg-[#F3F4F6] dark:bg-[#242426] text-slate-900 dark:text-neutral-100 rounded-2xl rounded-tl-sm'
                           }`}
                         >
                           {msg.forwarded && (
                             <p
                               className={`text-[11px] font-medium inline-flex items-center gap-1 mb-1 ${
-                                isOwn ? 'text-white/80' : 'text-slate-500 dark:text-slate-400'
+                                isOwn ? 'text-white/80' : 'text-slate-500 dark:text-neutral-400'
                               }`}
                             >
                               <CornerUpRight className="w-3 h-3" />
@@ -1168,10 +1270,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                               className={`w-full text-left rounded-xl px-2.5 py-1.5 mb-2 text-xs transition-colors ${
                                 isOwn
                                   ? 'bg-white/15 hover:bg-white/20 text-white'
-                                  : 'bg-black/[0.05] dark:bg-white/[0.07] hover:bg-black/[0.08] text-slate-700 dark:text-slate-200'
+                                  : 'bg-black/[0.05] dark:bg-white/[0.07] hover:bg-black/[0.08] text-slate-700 dark:text-neutral-200'
                               }`}
                             >
-                              <p className="font-semibold truncate">{msg.replyTo.senderUsername}</p>
+                              <p className="font-semibold truncate">{replyAuthorName}</p>
                               <p className="opacity-85 line-clamp-1">{msg.replyTo.snippet}</p>
                             </button>
                           )}
@@ -1227,7 +1329,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                   <span>View-once photo · {formatBytes(att.sizeBytes)}</span>
                                 </div>
                               ) : viewedOnceMap[msg.id] ? (
-                                <div className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-black/[0.06] dark:bg-white/[0.06] text-xs text-slate-500 dark:text-slate-400">
+                                <div className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-black/[0.06] dark:bg-white/[0.06] text-xs text-slate-500 dark:text-neutral-400">
                                   <EyeOff className="w-4 h-4 shrink-0" />
                                   <span>View-once photo · Opened</span>
                                 </div>
@@ -1258,7 +1360,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                 className={`inline-flex items-center gap-3 px-3 py-2 rounded-xl max-w-full ${
                                   isOwn
                                     ? 'bg-white/15 text-white'
-                                    : 'bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08]'
+                                    : 'bg-white dark:bg-[#121212] border border-slate-200 dark:border-white/[0.08]'
                                 }`}
                               >
                                 <FileText className="w-5 h-5 shrink-0" />
@@ -1268,7 +1370,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                   </p>
                                   <p
                                     className={`text-xs tabular-nums ${
-                                      isOwn ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'
+                                      isOwn ? 'text-white/75' : 'text-slate-500 dark:text-neutral-400'
                                     }`}
                                   >
                                     {formatBytes(att.sizeBytes)}
@@ -1299,7 +1401,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             setShowMoreEmojis(false);
                           }}
                           aria-label="Message actions"
-                          className="opacity-0 group-hover:opacity-100 focus:opacity-100 min-h-[32px] min-w-[32px] rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-all shrink-0"
+                          className="opacity-0 group-hover:opacity-100 focus:opacity-100 min-h-[32px] min-w-[32px] rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-all shrink-0"
                         >
                           <MoreHorizontal className="w-4 h-4" />
                         </button>
@@ -1316,7 +1418,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                               className={`min-h-[26px] px-2 py-0.5 rounded-full text-xs inline-flex items-center gap-1 border transition-colors tabular-nums ${
                                 grp.mine
                                   ? 'bg-[#2B84F6]/12 border-[#2B84F6]/40 text-[#2B84F6] font-semibold'
-                                  : 'bg-white dark:bg-[#161C2C] border-slate-200 dark:border-white/[0.1] text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-white/[0.06]'
+                                  : 'bg-white dark:bg-[#1C1C1E] border-slate-200 dark:border-white/[0.1] text-slate-700 dark:text-neutral-200 hover:bg-slate-50 dark:hover:bg-white/[0.06]'
                               }`}
                             >
                               <span>{grp.emoji}</span>
@@ -1327,13 +1429,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       )}
 
                       {/* Timestamp & Read Receipt */}
-                      <div className="flex items-center gap-1 mt-1 px-1 text-[11px] text-slate-400 dark:text-slate-500 tabular-nums">
+                      <div className="flex items-center gap-1 mt-1 px-1 text-[11px] text-slate-400 dark:text-neutral-500 tabular-nums">
                         <span>{formatMessageTime(msg.createdAt)}</span>
                         {isOwn && (
                           isReadByPeer ? (
                             <CheckCheck className="w-3.5 h-3.5 text-[#2B84F6]" aria-label="Read" />
                           ) : (
-                            <Check className="w-3.5 h-3.5 text-slate-400" aria-label="Sent" />
+                            <Check className="w-3.5 h-3.5 text-slate-400 dark:text-neutral-500" aria-label="Sent" />
                           )
                         )}
                       </div>
@@ -1346,23 +1448,26 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
 
         {/* Composer Dock */}
-        <div className="p-3 sm:p-4 border-t border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#111622] shrink-0 space-y-2.5">
+        <div className="p-3 sm:p-4 border-t border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#121212] shrink-0 space-y-2.5">
           {activeTypists.length > 0 && (
             <div
               role="status"
               aria-live="polite"
-              className="flex items-center gap-2.5 px-1 text-xs text-slate-600 dark:text-slate-300 message-enter"
+              className="flex items-center gap-2.5 px-1 text-xs text-slate-600 dark:text-neutral-300 message-enter"
             >
               <div className="flex -space-x-1.5 shrink-0">
-                {activeTypists.slice(0, 3).map((typist) => (
-                  <div
-                    key={typist.userId}
-                    className="h-5 w-5 rounded-full ring-2 ring-white dark:ring-[#111622] flex items-center justify-center text-[10px] font-bold text-white"
-                    style={{ backgroundColor: typist.color }}
-                  >
-                    {typist.username.slice(0, 1).toUpperCase()}
-                  </div>
-                ))}
+                {activeTypists.slice(0, 3).map((typist) => {
+                  const typistName = getDisplayName(typist.userId, typist.username, nicknames);
+                  return (
+                    <div
+                      key={typist.userId}
+                      className="h-5 w-5 rounded-full ring-2 ring-white dark:ring-[#121212] flex items-center justify-center text-[10px] font-bold text-white"
+                      style={{ backgroundColor: typist.color }}
+                    >
+                      {typistName.slice(0, 1).toUpperCase()}
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-100 dark:bg-white/[0.06]">
@@ -1380,24 +1485,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 />
               </div>
 
-              <span className="truncate font-medium text-slate-500 dark:text-slate-400">
+              <span className="truncate font-medium text-slate-500 dark:text-neutral-400">
                 {activeTypists.length === 1
-                  ? `${activeTypists[0].username} is typing`
+                  ? `${getDisplayName(activeTypists[0].userId, activeTypists[0].username, nicknames)} is typing`
                   : activeTypists.length === 2
-                    ? `${activeTypists[0].username} and ${activeTypists[1].username} are typing`
-                    : `${activeTypists[0].username} and ${activeTypists.length - 1} others are typing`}
+                    ? `${getDisplayName(activeTypists[0].userId, activeTypists[0].username, nicknames)} and ${getDisplayName(activeTypists[1].userId, activeTypists[1].username, nicknames)} are typing`
+                    : `${getDisplayName(activeTypists[0].userId, activeTypists[0].username, nicknames)} and ${activeTypists.length - 1} others are typing`}
               </span>
             </div>
           )}
 
           {replyingTo && (
-            <div className="px-3.5 py-2 rounded-2xl bg-slate-100 dark:bg-[#0B0E14] flex items-center justify-between gap-3">
+            <div className="px-3.5 py-2 rounded-2xl bg-slate-100 dark:bg-black flex items-center justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-semibold text-[#2B84F6] inline-flex items-center gap-1">
                   <CornerUpLeft className="w-3 h-3" />
                   <span>Replying to {replyingTo.senderUsername}</span>
                 </p>
-                <p className="text-xs text-slate-600 dark:text-slate-400 truncate mt-0.5">
+                <p className="text-xs text-slate-600 dark:text-neutral-400 truncate mt-0.5">
                   {replyingTo.snippet}
                 </p>
               </div>
@@ -1419,7 +1524,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           )}
 
           {stagedAttachment && (
-            <div className="p-2.5 rounded-2xl border border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-[#0B0E14] flex items-center justify-between gap-3">
+            <div className="p-2.5 rounded-2xl border border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-black flex items-center justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
                 {stagedAttachment.previewUrl ? (
                   <img
@@ -1434,7 +1539,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 )}
                 <div className="min-w-0">
                   <p className="text-xs font-semibold truncate">{stagedAttachment.file.name}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+                  <p className="text-xs text-slate-500 dark:text-neutral-400 tabular-nums">
                     {formatBytes(stagedAttachment.file.size)} · Max 5 MB
                   </p>
                 </div>
@@ -1452,7 +1557,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     className={`min-h-[36px] px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
                       stagedAttachment.viewOnce
                         ? 'bg-[#2B84F6] text-white'
-                        : 'border border-slate-200 dark:border-white/[0.1] text-slate-700 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/[0.06]'
+                        : 'border border-slate-200 dark:border-white/[0.1] text-slate-700 dark:text-neutral-300 hover:bg-slate-200/70 dark:hover:bg-white/[0.06]'
                     }`}
                   >
                     {stagedAttachment.viewOnce ? (
@@ -1481,7 +1586,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               Your account is banned from sending messages.
             </div>
           ) : isDmBlocked ? (
-            <div className="min-h-[44px] px-4 py-2.5 rounded-2xl bg-slate-100 dark:bg-white/[0.04] text-xs text-slate-600 dark:text-slate-400 flex items-center">
+            <div className="min-h-[44px] px-4 py-2.5 rounded-2xl bg-slate-100 dark:bg-white/[0.04] text-xs text-slate-600 dark:text-neutral-400 flex items-center">
               You blocked this user. Unblock them in Settings or their Profile to resume chatting.
             </div>
           ) : (
@@ -1506,7 +1611,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 disabled={sending}
                 title="Share photo or view-once photo (max 5 MB)"
                 aria-label="Share photo"
-                className="min-h-[44px] min-w-[44px] rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-600 dark:text-slate-300 flex items-center justify-center transition-colors shrink-0"
+                className="min-h-[44px] min-w-[44px] rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-600 dark:text-neutral-300 flex items-center justify-center transition-colors shrink-0"
               >
                 <ImageIcon className="w-4 h-4" />
               </button>
@@ -1517,7 +1622,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 disabled={sending}
                 title="Attach file (max 5 MB)"
                 aria-label="Attach file"
-                className="min-h-[44px] min-w-[44px] rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-600 dark:text-slate-300 flex items-center justify-center transition-colors shrink-0"
+                className="min-h-[44px] min-w-[44px] rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-600 dark:text-neutral-300 flex items-center justify-center transition-colors shrink-0"
               >
                 <Paperclip className="w-4 h-4" />
               </button>
@@ -1531,10 +1636,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   maxLength={1000}
                   rows={1}
                   placeholder={`Message ${headerTitle}...`}
-                  className="w-full min-h-[44px] max-h-32 px-4 py-2.5 rounded-3xl bg-slate-100 dark:bg-[#0B0E14] border border-transparent focus:border-[#2B84F6]/40 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6] resize-none"
+                  className="w-full min-h-[44px] max-h-32 px-4 py-2.5 rounded-3xl bg-slate-100 dark:bg-black border border-transparent focus:border-[#2B84F6]/40 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6] resize-none"
                 />
                 {draft.length >= 750 && (
-                  <span className="absolute right-3.5 bottom-2 text-[11px] font-mono tabular-nums text-slate-400">
+                  <span className="absolute right-3.5 bottom-2 text-[11px] font-mono tabular-nums text-slate-400 dark:text-neutral-500">
                     {draft.length}/1000
                   </span>
                 )}
@@ -1556,7 +1661,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Members & Requests Drawer */}
       {membersOpen && (
-        <aside className="fixed inset-0 z-30 lg:static lg:z-auto lg:w-76 bg-white dark:bg-[#111622] lg:border-l border-slate-200 dark:border-white/[0.08] flex flex-col shrink-0">
+        <aside className="fixed inset-0 z-30 lg:static lg:z-auto lg:w-76 bg-white dark:bg-[#121212] lg:border-l border-slate-200 dark:border-white/[0.08] flex flex-col shrink-0">
           <div className="h-15 px-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between">
             <h2 className="text-sm font-semibold tabular-nums">
               Members ({members.length})
@@ -1580,51 +1685,54 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </h3>
                 </div>
                 {joinRequests.length === 0 ? (
-                  <p className="text-xs text-slate-500 dark:text-slate-400 px-1">
+                  <p className="text-xs text-slate-500 dark:text-neutral-400 px-1">
                     No pending requests.
                   </p>
                 ) : (
                   <ul className="space-y-2">
-                    {joinRequests.map((req) => (
-                      <li
-                        key={req.userId}
-                        className="p-2.5 rounded-2xl border border-amber-500/30 bg-amber-500/5 space-y-2"
-                      >
-                        <button
-                          type="button"
-                          onClick={() => onOpenProfile(req.userId)}
-                          className="flex items-center gap-2.5 min-w-0 w-full text-left hover:opacity-80"
+                    {joinRequests.map((req) => {
+                      const reqDisplay = getDisplayName(req.userId, req.username, nicknames);
+                      return (
+                        <li
+                          key={req.userId}
+                          className="p-2.5 rounded-2xl border border-amber-500/30 bg-amber-500/5 space-y-2"
                         >
-                          <Avatar username={req.username} color={req.color} size="sm" />
-                          <div className="min-w-0 flex-1">
-                            <p className="text-sm font-medium truncate">{req.username}</p>
-                            <p className="text-xs text-slate-500 dark:text-slate-400">
-                              Tap to view profile
-                            </p>
+                          <button
+                            type="button"
+                            onClick={() => onOpenProfile(req.userId)}
+                            className="flex items-center gap-2.5 min-w-0 w-full text-left hover:opacity-80"
+                          >
+                            <Avatar username={req.username} color={req.color} size="sm" />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-medium truncate">{reqDisplay}</p>
+                              <p className="text-xs text-slate-500 dark:text-neutral-400">
+                                Tap to view profile
+                              </p>
+                            </div>
+                          </button>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleApproveRequest(req)}
+                              disabled={processingReqId === req.userId}
+                              className="min-h-[36px] px-2.5 py-1 rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center justify-center gap-1"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Approve</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeclineRequest(req)}
+                              disabled={processingReqId === req.userId}
+                              className="min-h-[36px] px-2.5 py-1 rounded-full border border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.06] text-xs font-medium inline-flex items-center justify-center gap-1"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                              <span>Decline</span>
+                            </button>
                           </div>
-                        </button>
-                        <div className="grid grid-cols-2 gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => handleApproveRequest(req)}
-                            disabled={processingReqId === req.userId}
-                            className="min-h-[36px] px-2.5 py-1 rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center justify-center gap-1"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                            <span>Approve</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeclineRequest(req)}
-                            disabled={processingReqId === req.userId}
-                            className="min-h-[36px] px-2.5 py-1 rounded-full border border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.06] text-xs font-medium inline-flex items-center justify-center gap-1"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                            <span>Decline</span>
-                          </button>
-                        </div>
-                      </li>
-                    ))}
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </div>
@@ -1634,11 +1742,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
               {members.map((member) => {
                 const isSelf = member.id === currentUser.id;
                 const isBlocked = blockedUserIds.has(member.id);
+                const memberDisplay = getDisplayName(member.id, member.username, nicknames);
+                const hasNick = Boolean(nicknames[member.id]?.trim());
 
                 return (
                   <li
                     key={member.id}
-                    className="p-2.5 rounded-2xl border border-slate-200/80 dark:border-white/[0.06] bg-slate-50/70 dark:bg-[#0B0E14]/50 space-y-2"
+                    className="p-2.5 rounded-2xl border border-slate-200/80 dark:border-white/[0.06] bg-slate-50/70 dark:bg-[#1C1C1E]/60 space-y-2"
                   >
                     <button
                       type="button"
@@ -1653,9 +1763,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       />
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-medium truncate">
-                          {member.username}
+                          {memberDisplay}
                           {isSelf && (
-                            <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500">
+                            <span className="ml-1.5 text-xs text-slate-400 dark:text-neutral-500">
                               (you)
                             </span>
                           )}
@@ -1663,6 +1773,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             <span className="ml-1.5 text-xs text-[#2B84F6]">· Admin</span>
                           )}
                         </p>
+                        {hasNick && (
+                          <p className="text-xs text-slate-500 dark:text-neutral-400 truncate">
+                            @{member.username}
+                          </p>
+                        )}
                         {isBlocked && (
                           <p className="text-xs text-red-500 dark:text-red-400">Blocked</p>
                         )}
@@ -1670,7 +1785,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     </button>
 
                     {!isSelf && (
-                      <div className="flex items-center gap-1.5 pt-1">
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
                         {!isBlocked && (
                           <button
                             type="button"
@@ -1685,9 +1800,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <button
                           type="button"
                           onClick={() =>
+                            openNicknameModal(member.id, member.username, member.color)
+                          }
+                          title={hasNick ? 'Edit nickname' : 'Set nickname'}
+                          className={`min-h-[34px] px-2.5 py-1 rounded-full border text-xs font-medium inline-flex items-center justify-center gap-1 transition-colors ${
+                            hasNick
+                              ? 'border-[#2B84F6]/40 bg-[#2B84F6]/10 text-[#2B84F6]'
+                              : 'border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.06]'
+                          }`}
+                        >
+                          <Tag className="w-3.5 h-3.5" />
+                          <span>{hasNick ? 'Nick' : 'Nick'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
                             onRequestReport({
                               userId: member.id,
-                              label: member.username,
+                              label: memberDisplay,
                             })
                           }
                           className="min-h-[34px] px-2.5 py-1 rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.06] text-xs font-medium inline-flex items-center justify-center gap-1 transition-colors"
@@ -1721,10 +1851,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </aside>
       )}
 
-      {/* Interactive Message Action Sheet (matching reference right screen) */}
+      {/* Interactive Message Action Sheet */}
       {actionMessage && (
         <div
-          className="fixed inset-0 z-50 bg-black/30 dark:bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-4"
+          className="fixed inset-0 z-50 bg-black/30 dark:bg-black/65 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-4"
           onClick={() => {
             setActionMessage(null);
             setShowMoreEmojis(false);
@@ -1734,14 +1864,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
           aria-label="Message actions"
         >
           <div
-            className="w-full max-w-sm rounded-3xl bg-white dark:bg-[#161C2C] border border-slate-200/80 dark:border-white/[0.1] shadow-2xl overflow-hidden message-enter"
+            className="w-full max-w-sm rounded-3xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/[0.1] shadow-2xl overflow-hidden message-enter"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Message Preview Card */}
             <div className="p-4 pb-2">
-              <div className="p-3.5 rounded-2xl bg-slate-100/90 dark:bg-[#0B0E14] text-sm text-slate-800 dark:text-slate-200">
-                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1">
-                  {actionMessage.senderUsername}
+              <div className="p-3.5 rounded-2xl bg-slate-100/90 dark:bg-black text-sm text-slate-800 dark:text-neutral-200">
+                <p className="text-xs font-semibold text-slate-500 dark:text-neutral-400 mb-1">
+                  {getDisplayName(
+                    actionMessage.senderId,
+                    actionMessage.senderUsername,
+                    nicknames,
+                  )}
                 </p>
                 <p className="line-clamp-3 leading-relaxed">
                   {buildMessageSnippet(actionMessage)}
@@ -1751,7 +1885,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
             {/* Emoji React Strip */}
             <div className="px-4 py-3 space-y-2.5 border-b border-slate-100 dark:border-white/[0.08]">
-              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">React</p>
+              <p className="text-xs font-medium text-slate-500 dark:text-neutral-400">React</p>
               <div className="flex items-center justify-between gap-1">
                 {PRIMARY_REACTIONS.map((emoji) => {
                   const selected =
@@ -1774,7 +1908,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   type="button"
                   onClick={() => setShowMoreEmojis((prev) => !prev)}
                   aria-label="More reactions"
-                  className="h-9 w-9 rounded-full bg-slate-100 dark:bg-white/[0.08] hover:bg-slate-200 dark:hover:bg-white/[0.14] text-slate-600 dark:text-slate-200 flex items-center justify-center transition-colors"
+                  className="h-9 w-9 rounded-full bg-slate-100 dark:bg-white/[0.08] hover:bg-slate-200 dark:hover:bg-white/[0.14] text-slate-600 dark:text-neutral-200 flex items-center justify-center transition-colors"
                 >
                   <Plus className="w-4 h-4" />
                 </button>
@@ -1808,19 +1942,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <button
                 type="button"
                 onClick={() => handleCopyMessage(actionMessage)}
-                className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+                className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-neutral-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
               >
                 <span>Copy</span>
-                <Copy className="w-4 h-4 text-slate-500" />
+                <Copy className="w-4 h-4 text-slate-500 dark:text-neutral-400" />
               </button>
 
               <button
                 type="button"
                 onClick={() => handleReplyMessage(actionMessage)}
-                className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+                className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-neutral-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
               >
                 <span>Reply</span>
-                <CornerUpLeft className="w-4 h-4 text-slate-500" />
+                <CornerUpLeft className="w-4 h-4 text-slate-500 dark:text-neutral-400" />
               </button>
 
               <button
@@ -1830,10 +1964,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   setActionMessage(null);
                   setForwardingMessage(target);
                 }}
-                className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+                className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-neutral-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
               >
                 <span>Forward</span>
-                <CornerUpRight className="w-4 h-4 text-slate-500" />
+                <CornerUpRight className="w-4 h-4 text-slate-500 dark:text-neutral-400" />
               </button>
 
               {actionMessage.senderId === currentUser.id ? (
@@ -1852,16 +1986,40 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     onClick={() => {
                       const target = actionMessage;
                       setActionMessage(null);
+                      openNicknameModal(
+                        target.senderId,
+                        target.senderUsername,
+                        target.senderColor,
+                      );
+                    }}
+                    className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-neutral-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+                  >
+                    <span>
+                      {nicknames[actionMessage.senderId]
+                        ? 'Edit friend nickname'
+                        : 'Set friend nickname'}
+                    </span>
+                    <Tag className="w-4 h-4 text-slate-500 dark:text-neutral-400" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = actionMessage;
+                      setActionMessage(null);
                       onRequestReport({
                         userId: target.senderId,
-                        label: target.senderUsername,
+                        label: getDisplayName(
+                          target.senderId,
+                          target.senderUsername,
+                          nicknames,
+                        ),
                         messageId: target.id,
                       });
                     }}
-                    className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+                    className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-neutral-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
                   >
                     <span>Report message</span>
-                    <Flag className="w-4 h-4 text-slate-500" />
+                    <Flag className="w-4 h-4 text-slate-500 dark:text-neutral-400" />
                   </button>
                   <button
                     type="button"
@@ -1876,7 +2034,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     }}
                     className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-500/[0.06] transition-colors"
                   >
-                    <span>Block {actionMessage.senderUsername}</span>
+                    <span>
+                      Block{' '}
+                      {getDisplayName(
+                        actionMessage.senderId,
+                        actionMessage.senderUsername,
+                        nicknames,
+                      )}
+                    </span>
                     <ShieldBan className="w-4 h-4" />
                   </button>
                 </>
@@ -1886,11 +2051,92 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
 
+      {/* Friend Nickname Modal */}
+      {nicknameTarget && (
+        <div
+          className="fixed inset-0 z-50 bg-black/45 dark:bg-black/75 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setNicknameTarget(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="nickname-modal-title"
+        >
+          <div
+            className="w-full max-w-sm rounded-3xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.1] shadow-2xl p-5 space-y-4 message-enter"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 id="nickname-modal-title" className="text-base font-bold tracking-tight">
+                  Friend nickname
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">
+                  Private label for @{nicknameTarget.username} — only visible to you.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setNicknameTarget(null)}
+                aria-label="Close"
+                className="min-h-[36px] min-w-[36px] -mr-1 -mt-1 rounded-full flex items-center justify-center text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveNicknameModal} className="space-y-3">
+              <input
+                type="text"
+                value={nicknameInput}
+                onChange={(e) => setNicknameInput(e.target.value)}
+                maxLength={32}
+                placeholder="Enter a nickname (1-32 chars)"
+                autoFocus
+                className="w-full min-h-[44px] px-3.5 py-2 rounded-2xl border border-slate-200 dark:border-white/[0.12] bg-slate-50 dark:bg-black text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6]"
+              />
+
+              {nicknameError && (
+                <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+                  {nicknameError}
+                </p>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                {nicknames[nicknameTarget.userId] && (
+                  <button
+                    type="button"
+                    onClick={handleClearNicknameModal}
+                    disabled={savingNickname}
+                    className="mr-auto min-h-[40px] px-3.5 py-1.5 rounded-full border border-red-500/30 hover:bg-red-500/10 text-xs font-semibold text-red-600 dark:text-red-400 transition-colors"
+                  >
+                    Remove
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setNicknameTarget(null)}
+                  className="min-h-[40px] px-4 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.06] text-xs font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingNickname || !nicknameInput.trim()}
+                  className="min-h-[40px] px-4 py-1.5 rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-50 text-white text-xs font-semibold"
+                >
+                  {savingNickname ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Forward Message Modal */}
       <ForwardModal
         message={forwardingMessage}
         chats={allChats}
         currentUser={currentUser}
+        nicknames={nicknames}
         onClose={() => setForwardingMessage(null)}
         onForwarded={(targetChatId, label) => {
           onToast(`Forwarded to ${label}.`);
@@ -1901,7 +2147,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       {/* Image Lightbox */}
       {lightbox && (
         <div
-          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex flex-col items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex flex-col items-center justify-center p-4"
           onClick={closeLightbox}
           role="dialog"
           aria-modal="true"

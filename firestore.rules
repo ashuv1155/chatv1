@@ -56,7 +56,7 @@ service cloud.firestore {
     }
 
     function isValidUsername(name) {
-      return name is string && name.size() >= 3 && name.size() <= 32 && name.matches('^[A-Za-z0-9]+$');
+      return name is string && name.size() >= 3 && name.size() <= 32 && name.matches('^[A-Za-z0-9_]+$');
     }
 
     function isValidAvatarDataUrl(val) {
@@ -115,6 +115,15 @@ service cloud.firestore {
         isValidUsername(data.blockedUsername) &&
         isValidHexColor(data.blockedColor) &&
         data.createdAt is timestamp;
+    }
+
+    function isValidFriendNickname(data, ownerId, targetUserId) {
+      return data.keys().hasAll(['ownerId', 'targetUserId', 'nickname', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'targetUserId', 'nickname', 'updatedAt']) &&
+        data.ownerId is string && data.ownerId == ownerId &&
+        data.targetUserId is string && data.targetUserId == targetUserId &&
+        data.nickname is string && data.nickname.trim().size() >= 1 && data.nickname.size() <= 32 &&
+        data.updatedAt is timestamp;
     }
 
     function isValidRateLimit(data, userId) {
@@ -301,14 +310,10 @@ service cloud.firestore {
             (
               // Action: Update bio / avatarUrl
               incoming().diff(existing()).affectedKeys().hasOnly(['bio', 'avatarUrl']) ||
-              // Action: Rotate username (once every 24h, records history)
+              // Action: Set custom username or rotate random username (records history)
               (
                 incoming().diff(existing()).affectedKeys().hasOnly(['username', 'lastUsernameChangeAt', 'usernameHistory']) &&
-                incoming().lastUsernameChangeAt == request.time &&
-                (
-                  existing().lastUsernameChangeAt == null ||
-                  request.time >= existing().lastUsernameChangeAt + duration.value(24, 'h')
-                )
+                incoming().lastUsernameChangeAt == request.time
               )
             )
           )
@@ -392,6 +397,21 @@ service cloud.firestore {
 
         allow delete: if isOwner(userId) && isValidId(blockedUserId);
         allow update: if false;
+      }
+
+      // User's private nicknames for friends
+      match /nicknames/{targetUserId} {
+        allow get, list: if isOwner(userId);
+
+        allow create, update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(targetUserId) &&
+          targetUserId != userId &&
+          isValidFriendNickname(incoming(), userId, targetUserId) &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/profiles/$(targetUserId));
+
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(targetUserId);
       }
     }
 

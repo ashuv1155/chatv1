@@ -39,7 +39,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const displayError = localError || authError;
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-slate-100 flex flex-col">
+    <div className="min-h-screen bg-slate-50 dark:bg-black text-slate-900 dark:text-neutral-100 flex flex-col">
       <header className="w-full max-w-6xl mx-auto px-6 py-5 flex items-center justify-between gap-8">
         <span className="text-lg font-bold tracking-tight whitespace-nowrap shrink-0">
           Buddy Chat
@@ -47,7 +47,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         <button
           type="button"
           onClick={onOpenTerms}
-          className="text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors min-h-[44px] px-2 whitespace-nowrap shrink-0"
+          className="text-sm font-medium text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-neutral-100 transition-colors min-h-[44px] px-2 whitespace-nowrap shrink-0"
         >
           Terms & Privacy
         </button>
@@ -63,18 +63,18 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-balance leading-[1.12]">
                 Chat freely with a random handle. Leave no trail after 24 hours.
               </h1>
-              <p className="text-base text-slate-600 dark:text-slate-400 leading-relaxed max-w-xl">
+              <p className="text-base text-slate-600 dark:text-neutral-400 leading-relaxed max-w-xl">
                 Connect one-to-one or inside public and private groups without revealing your name, email, or Google photo.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 pt-4 border-t border-slate-200 dark:border-white/[0.08]">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 pt-4 border-t border-slate-200 dark:border-white/[0.1]">
               <div className="flex items-start gap-3">
                 <ShieldCheck className="w-5 h-5 text-[#2B84F6] shrink-0 mt-0.5" />
                 <div>
                   <h2 className="text-sm font-semibold">Anonymous profiles</h2>
-                  <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
-                    Random handle, optional bio & custom avatar, and transparent username change history.
+                  <p className="text-xs sm:text-sm text-slate-600 dark:text-neutral-400 mt-0.5 leading-relaxed">
+                    Custom or random handle, optional bio & avatar, friend nicknames, and username history.
                   </p>
                 </div>
               </div>
@@ -83,7 +83,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 <Clock className="w-5 h-5 text-[#2B84F6] shrink-0 mt-0.5" />
                 <div>
                   <h2 className="text-sm font-semibold">24-hour auto-delete</h2>
-                  <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-slate-600 dark:text-neutral-400 mt-0.5 leading-relaxed">
                     Every message and shared file expires automatically after 24 hours.
                   </p>
                 </div>
@@ -93,7 +93,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 <Image className="w-5 h-5 text-[#2B84F6] shrink-0 mt-0.5" />
                 <div>
                   <h2 className="text-sm font-semibold">Photos, view-once & files</h2>
-                  <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-slate-600 dark:text-neutral-400 mt-0.5 leading-relaxed">
                     Share photos, single-view disappearing photos, and files up to 5 MB.
                   </p>
                 </div>
@@ -103,7 +103,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 <Users className="w-5 h-5 text-[#2B84F6] shrink-0 mt-0.5" />
                 <div>
                   <h2 className="text-sm font-semibold">Public & private groups</h2>
-                  <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-slate-600 dark:text-neutral-400 mt-0.5 leading-relaxed">
                     Open public rooms or private invite-requested rooms approved by the group admin.
                   </p>
                 </div>
@@ -112,10 +112,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           </section>
 
           <section className="lg:col-span-5">
-            <div className="rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 sm:p-8 space-y-6">
+            <div className="rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.1] p-6 sm:p-8 space-y-6">
               <div className="space-y-1.5">
                 <h2 className="text-xl font-semibold tracking-tight">Sign in to Buddy Chat</h2>
-                <p className="text-sm text-slate-600 dark:text-slate-400">
+                <p className="text-sm text-slate-600 dark:text-neutral-400">
                   Sign in once with Google to keep your anonymous session saved on this device.
                 </p>
               </div>
@@ -140,9 +140,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     setAcceptedTerms(e.target.checked);
                     if (e.target.checked) setLocalError(null);
                   }}
-                  className="mt-1 h-5 w-5 rounded border-slate-300 dark:border-slate-600 bg-white dark:bg-[#0B0E14] text-[#2B84F6] focus:ring-2 focus:ring-[#2B84F6] focus:ring-offset-0 shrink-0"
+                  className="mt-1 h-5 w-5 rounded border-slate-300 dark:border-neutral-700 bg-white dark:bg-[#1C1C1E] text-[#2B84F6] focus:ring-2 focus:ring-[#2B84F6] focus:ring-offset-0 shrink-0"
                 />
-                <span className="text-sm text-slate-700 dark:text-slate-300 leading-snug">
+                <span className="text-sm text-slate-700 dark:text-neutral-300 leading-snug">
                   I am 18+ and accept the{' '}
                   <button
                     type="button"
@@ -182,7 +182,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 <span>{isSigningIn ? 'Signing in...' : 'Continue with Google'}</span>
               </button>
 
-              <div className="pt-1 flex items-center justify-center gap-3 text-xs text-slate-500 dark:text-slate-400">
+              <div className="pt-1 flex items-center justify-center gap-3 text-xs text-slate-500 dark:text-neutral-400">
                 <span className="inline-flex items-center gap-1">
                   <EyeOff className="w-3.5 h-3.5" />
                   24h ephemeral

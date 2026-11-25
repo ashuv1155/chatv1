@@ -41,7 +41,7 @@
 }
 
 .dark .chat-scroll {
-  scrollbar-color: rgba(148, 163, 184, 0.2) transparent;
+  scrollbar-color: rgba(163, 163, 163, 0.24) transparent;
 }
 
 .chat-scroll::-webkit-scrollbar {
@@ -59,7 +59,7 @@
 }
 
 .dark .chat-scroll::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.18);
+  background: rgba(163, 163, 163, 0.22);
 }
 
 @keyframes typing-dot {
