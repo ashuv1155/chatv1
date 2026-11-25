@@ -29,21 +29,21 @@ export const TermsPrivacyScreen: React.FC<TermsPrivacyScreenProps> = ({ onBack }
             Terms of Use & Privacy Policy
           </h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            Effective November 2026 · VeilChat Anonymous Messaging
+            Effective November 2026 · Buddy Chat Anonymous Messaging
           </p>
         </div>
 
         <section className="space-y-3">
           <h2 className="text-lg font-semibold">1. Eligibility (18+ Only)</h2>
           <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
-            You must be at least 18 years old to create an account or participate in any public group or direct message on VeilChat. By signing in, you confirm that you meet this age requirement.
+            You must be at least 18 years old to create an account or participate in any public group or direct message on Buddy Chat. By signing in, you confirm that you meet this age requirement.
           </p>
         </section>
 
         <section className="space-y-3">
           <h2 className="text-lg font-semibold">2. Anonymity & What We Do Not Store</h2>
           <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
-            VeilChat uses Google Sign-In via Firebase Authentication solely to prevent automated spam and enforce bans. Our backend extracts only your opaque Firebase user ID (<code className="font-mono text-xs px-1 py-0.5 rounded bg-slate-200 dark:bg-white/[0.06]">sub</code>) to generate your random handle (such as <span className="font-medium">SilentFox4821</span>) and color.
+            Buddy Chat uses Google Sign-In via Firebase Authentication solely to prevent automated spam and enforce bans. Our backend extracts only your opaque Firebase user ID (<code className="font-mono text-xs px-1 py-0.5 rounded bg-slate-200 dark:bg-white/[0.06]">sub</code>) to generate your random handle (such as <span className="font-medium">SilentFox4821</span>) and color.
           </p>
           <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
             We never store, log, or display your real name, email address, or Google profile photo in our database, server logs, or user interface.
@@ -67,7 +67,7 @@ export const TermsPrivacyScreen: React.FC<TermsPrivacyScreenProps> = ({ onBack }
         <section className="space-y-3">
           <h2 className="text-lg font-semibold">5. No Tracking Signals</h2>
           <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
-            VeilChat intentionally omits typing indicators, online presence status, and read receipts. Only members of a chat room can read or send messages in that room.
+            Buddy Chat intentionally omits typing indicators, online presence status, and read receipts. Only members of a chat room can read or send messages in that room.
           </p>
         </section>
       </main>

@@ -34,7 +34,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     <div className="min-h-screen bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-slate-100 flex flex-col">
       <header className="w-full max-w-6xl mx-auto px-6 py-5 flex items-center justify-between">
         <span className="text-lg font-bold tracking-tight whitespace-nowrap shrink-0">
-          VeilChat
+          Buddy Chat
         </span>
         <button
           type="button"
@@ -89,7 +89,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           <section className="lg:col-span-6">
             <div className="rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 sm:p-8 space-y-6">
               <div className="space-y-1.5">
-                <h2 className="text-xl font-semibold tracking-tight">Sign in to VeilChat</h2>
+                <h2 className="text-xl font-semibold tracking-tight">Sign in to Buddy Chat</h2>
                 <p className="text-sm text-slate-600 dark:text-slate-400">
                   Google sign-in verifies you are human and assigns a random anonymous handle.
                 </p>

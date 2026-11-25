@@ -223,7 +223,7 @@ export default function App() {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-slate-100 flex items-center justify-center p-6">
         <div className="text-center space-y-2">
-          <p className="text-base font-semibold tracking-tight">VeilChat</p>
+          <p className="text-base font-semibold tracking-tight">Buddy Chat</p>
           <p className="text-sm text-slate-500 dark:text-slate-400">
             {bootstrapping ? 'Preparing your anonymous session...' : 'Loading...'}
           </p>

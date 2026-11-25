@@ -139,7 +139,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside className="h-full flex flex-col bg-white dark:bg-[#111622] border-r border-slate-200 dark:border-white/[0.08]">
       <div className="px-4 h-14 flex items-center justify-between gap-3 border-b border-slate-200 dark:border-white/[0.08] shrink-0">
         <span className="text-base font-bold tracking-tight whitespace-nowrap shrink-0">
-          VeilChat
+          Buddy Chat
         </span>
         <button
           type="button"

@@ -1,6 +1,6 @@
-# VeilChat — Anonymous Real-Time Chat
+# Buddy Chat — Anonymous Real-Time Chat
 
-VeilChat is an anonymous chat web application built with React, Vite, TypeScript, Tailwind CSS, Firebase Authentication (Google Sign-In), and Cloud Firestore (`firebase-applet-config.json` + `firestore.rules`).
+Buddy Chat is an anonymous chat web application built with React, Vite, TypeScript, Tailwind CSS, Firebase Authentication (Google Sign-In), and Cloud Firestore (`firebase-applet-config.json` + `firestore.rules`).
 
 Real names, emails, and Google profile photos are never stored, logged, or displayed.
 
