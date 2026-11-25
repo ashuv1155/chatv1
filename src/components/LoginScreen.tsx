@@ -57,7 +57,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
           <section className="lg:col-span-7 space-y-8">
             <div className="space-y-4">
-              <p className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 tracking-wide">
+              <p className="text-xs font-semibold text-[#2B84F6] tracking-wide">
                 Anonymous real-time rooms & direct messaging
               </p>
               <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-balance leading-[1.12]">
@@ -70,7 +70,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 pt-4 border-t border-slate-200 dark:border-white/[0.08]">
               <div className="flex items-start gap-3">
-                <ShieldCheck className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
+                <ShieldCheck className="w-5 h-5 text-[#2B84F6] shrink-0 mt-0.5" />
                 <div>
                   <h2 className="text-sm font-semibold">Anonymous profiles</h2>
                   <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
@@ -80,7 +80,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               </div>
 
               <div className="flex items-start gap-3">
-                <Clock className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
+                <Clock className="w-5 h-5 text-[#2B84F6] shrink-0 mt-0.5" />
                 <div>
                   <h2 className="text-sm font-semibold">24-hour auto-delete</h2>
                   <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
@@ -90,7 +90,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               </div>
 
               <div className="flex items-start gap-3">
-                <Image className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
+                <Image className="w-5 h-5 text-[#2B84F6] shrink-0 mt-0.5" />
                 <div>
                   <h2 className="text-sm font-semibold">Photos, view-once & files</h2>
                   <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
@@ -100,7 +100,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               </div>
 
               <div className="flex items-start gap-3">
-                <Users className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
+                <Users className="w-5 h-5 text-[#2B84F6] shrink-0 mt-0.5" />
                 <div>
                   <h2 className="text-sm font-semibold">Public & private groups</h2>
                   <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
@@ -140,7 +140,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     setAcceptedTerms(e.target.checked);
                     if (e.target.checked) setLocalError(null);
                   }}
-                  className="mt-1 h-5 w-5 rounded border-slate-300 dark:border-slate-600 bg-white dark:bg-[#0B0E14] text-indigo-600 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-0 shrink-0"
+                  className="mt-1 h-5 w-5 rounded border-slate-300 dark:border-slate-600 bg-white dark:bg-[#0B0E14] text-[#2B84F6] focus:ring-2 focus:ring-[#2B84F6] focus:ring-offset-0 shrink-0"
                 />
                 <span className="text-sm text-slate-700 dark:text-slate-300 leading-snug">
                   I am 18+ and accept the{' '}
@@ -150,7 +150,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                       e.preventDefault();
                       onOpenTerms();
                     }}
-                    className="text-indigo-600 dark:text-indigo-400 underline underline-offset-2 hover:text-indigo-500 font-medium"
+                    className="text-[#2B84F6] underline underline-offset-2 hover:text-[#1D74E8] font-medium"
                   >
                     terms and privacy policy
                   </button>
@@ -171,7 +171,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 type="button"
                 onClick={handleContinue}
                 disabled={isSigningIn || !isFirebaseConfigured}
-                className="w-full min-h-[48px] px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm transition-colors flex items-center justify-center gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 whitespace-nowrap"
+                className="w-full min-h-[48px] px-5 py-3 rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm transition-colors flex items-center justify-center gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2B84F6] whitespace-nowrap"
               >
                 <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
                   <path
@@ -185,7 +185,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               <div className="pt-1 flex items-center justify-center gap-3 text-xs text-slate-500 dark:text-slate-400">
                 <span className="inline-flex items-center gap-1">
                   <EyeOff className="w-3.5 h-3.5" />
-                  No read receipts
+                  24h ephemeral
                 </span>
                 <span aria-hidden="true">·</span>
                 <span className="inline-flex items-center gap-1">

@@ -88,12 +88,12 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
                 onClick={() => setVisibility('public')}
                 className={`p-3 rounded-xl border text-left transition-colors ${
                   visibility === 'public'
-                    ? 'border-indigo-500 bg-indigo-500/10 text-slate-900 dark:text-white'
+                    ? 'border-[#2B84F6] bg-[#2B84F6]/10 text-slate-900 dark:text-white'
                     : 'border-slate-200 dark:border-white/[0.1] hover:bg-slate-50 dark:hover:bg-white/[0.04] text-slate-600 dark:text-slate-300'
                 }`}
               >
                 <div className="flex items-center gap-2 text-sm font-semibold">
-                  <Globe className="w-4 h-4 text-indigo-500 shrink-0" />
+                  <Globe className="w-4 h-4 text-[#2B84F6] shrink-0" />
                   <span>Public</span>
                 </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-snug">
@@ -106,7 +106,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
                 onClick={() => setVisibility('private')}
                 className={`p-3 rounded-xl border text-left transition-colors ${
                   visibility === 'private'
-                    ? 'border-indigo-500 bg-indigo-500/10 text-slate-900 dark:text-white'
+                    ? 'border-[#2B84F6] bg-[#2B84F6]/10 text-slate-900 dark:text-white'
                     : 'border-slate-200 dark:border-white/[0.1] hover:bg-slate-50 dark:hover:bg-white/[0.04] text-slate-600 dark:text-slate-300'
                 }`}
               >
@@ -133,7 +133,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
               maxLength={60}
               placeholder="Late Night Thoughts"
               autoFocus
-              className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0B0E14] border border-slate-200 dark:border-white/[0.1] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0B0E14] border border-slate-200 dark:border-white/[0.1] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6]"
             />
           </div>
 
@@ -148,7 +148,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
               maxLength={200}
               rows={3}
               placeholder="What is this room about?"
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0B0E14] border border-slate-200 dark:border-white/[0.1] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0B0E14] border border-slate-200 dark:border-white/[0.1] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6] resize-none"
             />
           </div>
 
@@ -162,14 +162,14 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="min-h-[44px] px-4 py-2 rounded-xl text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors"
+              className="min-h-[44px] px-4 py-2 rounded-full text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.05] transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting || name.trim().length < 2}
-              className="min-h-[44px] px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors whitespace-nowrap"
+              className="min-h-[44px] px-5 py-2 rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors whitespace-nowrap"
             >
               {submitting ? 'Creating...' : visibility === 'private' ? 'Create private group' : 'Create public group'}
             </button>

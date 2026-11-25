@@ -4,7 +4,7 @@ interface AvatarProps {
   username: string;
   color: string;
   avatarUrl?: string | null;
-  size?: 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
 }
 
 function getInitials(name: string): string {
@@ -28,13 +28,15 @@ export const Avatar: React.FC<AvatarProps> = ({
   }, [avatarUrl]);
 
   const sizeClass =
-    size === 'sm'
-      ? 'h-8 w-8 text-xs rounded-xl'
-      : size === 'lg'
-        ? 'h-12 w-12 text-base rounded-2xl'
-        : size === 'xl'
-          ? 'h-20 w-20 text-2xl rounded-2xl'
-          : 'h-9 w-9 text-xs rounded-xl';
+    size === 'xs'
+      ? 'h-6 w-6 text-[10px] rounded-full'
+      : size === 'sm'
+        ? 'h-9 w-9 text-xs rounded-full'
+        : size === 'lg'
+          ? 'h-12 w-12 text-base rounded-full'
+          : size === 'xl'
+            ? 'h-20 w-20 text-2xl rounded-full'
+            : 'h-11 w-11 text-xs rounded-full';
 
   if (avatarUrl && !imgFailed) {
     return (

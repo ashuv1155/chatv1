@@ -189,14 +189,45 @@ service cloud.firestore {
       );
     }
 
+    function isValidReplyMeta(reply) {
+      return reply == null || (
+        reply is map &&
+        reply.keys().hasAll(['messageId', 'senderUsername', 'snippet']) &&
+        reply.keys().hasOnly(['messageId', 'senderUsername', 'snippet']) &&
+        isValidId(reply.messageId) &&
+        isValidUsername(reply.senderUsername) &&
+        reply.snippet is string && reply.snippet.size() <= 160
+      );
+    }
+
+    function isValidReaction(data, reactionId) {
+      return data.keys().hasAll(['messageId', 'userId', 'username', 'emoji', 'updatedAt']) &&
+        data.keys().hasOnly(['messageId', 'userId', 'username', 'emoji', 'updatedAt']) &&
+        isValidId(data.messageId) &&
+        data.userId is string && data.userId == request.auth.uid &&
+        reactionId == data.messageId + '_' + request.auth.uid &&
+        isValidUsername(data.username) &&
+        data.emoji is string && data.emoji.size() >= 1 && data.emoji.size() <= 16 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidReadReceipt(data, userId) {
+      return data.keys().hasAll(['userId', 'lastReadAt']) &&
+        data.keys().hasOnly(['userId', 'lastReadAt']) &&
+        data.userId is string && data.userId == userId &&
+        data.lastReadAt is timestamp;
+    }
+
     function isValidMessage(data) {
       return data.keys().hasAll(['senderId', 'senderUsername', 'senderColor', 'body', 'createdAt']) &&
-        data.keys().hasOnly(['senderId', 'senderUsername', 'senderColor', 'body', 'attachment', 'createdAt', 'expiresAt']) &&
+        data.keys().hasOnly(['senderId', 'senderUsername', 'senderColor', 'body', 'attachment', 'replyTo', 'forwarded', 'createdAt', 'expiresAt']) &&
         data.senderId is string && data.senderId == request.auth.uid &&
         isValidUsername(data.senderUsername) &&
         isValidHexColor(data.senderColor) &&
         data.body is string && data.body.size() <= 1000 &&
         (!('attachment' in data) || isValidAttachmentMeta(data.attachment)) &&
+        (!('replyTo' in data) || isValidReplyMeta(data.replyTo)) &&
+        (!('forwarded' in data) || data.forwarded is bool) &&
         (data.body.trim().size() >= 1 || ('attachment' in data && data.attachment != null)) &&
         data.createdAt is timestamp &&
         (!('expiresAt' in data) || data.expiresAt is timestamp);
@@ -538,6 +569,37 @@ service cloud.firestore {
         allow delete: if isOwner(userId) && isValidId(chatId) && isValidId(userId);
       }
 
+      match /reactions/{reactionId} {
+        allow get, list: if isSignedIn() && isChatMember(chatId);
+
+        allow create, update: if isSignedIn() &&
+          isValidId(chatId) &&
+          isValidId(reactionId) &&
+          isValidReaction(incoming(), reactionId) &&
+          incoming().updatedAt == request.time &&
+          isChatMember(chatId) &&
+          !isUserBanned(request.auth.uid);
+
+        allow delete: if isSignedIn() &&
+          isValidId(chatId) &&
+          isValidId(reactionId) &&
+          isChatMember(chatId) &&
+          existing().userId == request.auth.uid;
+      }
+
+      match /readReceipts/{userId} {
+        allow get, list: if isSignedIn() && isChatMember(chatId);
+
+        allow create, update: if isOwner(userId) &&
+          isValidId(chatId) &&
+          isValidId(userId) &&
+          isValidReadReceipt(incoming(), userId) &&
+          incoming().lastReadAt == request.time &&
+          isChatMember(chatId);
+
+        allow delete: if isOwner(userId) && isValidId(chatId) && isValidId(userId);
+      }
+
       match /joinRequests/{requesterId} {
         allow get: if isSignedIn() && isValidId(chatId) && isValidId(requesterId) && (
           request.auth.uid == requesterId ||
@@ -597,7 +659,13 @@ service cloud.firestore {
           !isUserBanned(request.auth.uid) &&
           getAfter(/databases/$(database)/documents/rateLimits/$(request.auth.uid)).data.lastMessageId == messageId;
 
-        allow update, delete: if false;
+        allow update: if false;
+
+        allow delete: if isSignedIn() &&
+          isValidId(chatId) &&
+          isValidId(messageId) &&
+          isChatMember(chatId) &&
+          existing().senderId == request.auth.uid;
 
         match /views/{viewerId} {
           allow get: if isOwner(viewerId) && isValidId(chatId) && isValidId(messageId) && isValidId(viewerId) && isChatMember(chatId);

@@ -5,6 +5,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getCountFromServer,
   getDoc,
   getDocs,
   limit,
@@ -25,12 +26,15 @@ import type {
   AttachmentMeta,
   BlockEntry,
   ChatMessage,
+  ChatReadReceipt,
   ChatSummary,
   GroupSearchResult,
   GroupVisibility,
   JoinRequest,
   JoinRequestStatus,
+  MessageReaction,
   Profile,
+  ReplyMeta,
   TypingParticipant,
   UsernameHistoryEntry,
 } from '../types';
@@ -138,6 +142,17 @@ function parseAttachmentMeta(raw: unknown): AttachmentMeta | null {
   };
 }
 
+function parseReplyMeta(raw: unknown): ReplyMeta | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  if (!obj.messageId || !obj.senderUsername) return null;
+  return {
+    messageId: String(obj.messageId),
+    senderUsername: String(obj.senderUsername),
+    snippet: String(obj.snippet ?? '').slice(0, 160),
+  };
+}
+
 function mapMessageDoc(
   chatId: string,
   docSnap: QueryDocumentSnapshot<DocumentData>,
@@ -151,6 +166,8 @@ function mapMessageDoc(
     senderColor: String(data.senderColor ?? '#6366F1'),
     body: String(data.body ?? ''),
     attachment: parseAttachmentMeta(data.attachment),
+    replyTo: parseReplyMeta(data.replyTo),
+    forwarded: Boolean(data.forwarded),
     createdAt: toIso(data.createdAt),
     expiresAt: toNullableIso(data.expiresAt),
     pending: docSnap.metadata.hasPendingWrites,
@@ -493,12 +510,51 @@ export function subscribeToAdminJoinRequests(
 
 export async function markChatRead(uid: string, chatId: string): Promise<void> {
   const db = getFirestoreDb();
-  try {
-    await updateDoc(doc(db, 'profiles', uid, 'myChats', chatId), {
+  await Promise.allSettled([
+    updateDoc(doc(db, 'profiles', uid, 'myChats', chatId), {
       lastReadAt: serverTimestamp(),
-    });
+    }),
+    setDoc(doc(db, 'chats', chatId, 'readReceipts', uid), {
+      userId: uid,
+      lastReadAt: serverTimestamp(),
+    }),
+  ]);
+}
+
+export async function fetchUnreadCountForChat(
+  chatId: string,
+  lastReadAt: string | null | undefined,
+): Promise<number> {
+  const db = getFirestoreDb();
+  try {
+    const sinceDate = lastReadAt
+      ? new Date(lastReadAt)
+      : new Date(Date.now() - TWENTY_FOUR_HOURS_MS);
+    const q = query(
+      collection(db, 'chats', chatId, 'messages'),
+      where('createdAt', '>', Timestamp.fromDate(sinceDate)),
+    );
+    const snap = await getCountFromServer(q);
+    return snap.data().count;
   } catch {
-    // Ignore if chat link was removed
+    return 1;
+  }
+}
+
+export async function fetchQuickContacts(
+  currentUserId: string,
+  blockedUserIds: Set<string>,
+): Promise<Profile[]> {
+  const db = getFirestoreDb();
+  try {
+    const q = query(collection(db, 'profiles'), where('banned', '==', false), limit(24));
+    const snap = await getDocs(q);
+    return snap.docs
+      .map((docSnap) => mapProfileData(docSnap.id, docSnap.data()))
+      .filter((p) => p.id !== currentUserId && !blockedUserIds.has(p.id))
+      .slice(0, 12);
+  } catch {
+    return [];
   }
 }
 
@@ -1116,6 +1172,7 @@ export async function sendMessage(
   body: string,
   attachmentInput?: { file: File; kind: AttachmentKind },
   dmPartnerId?: string | null,
+  options?: { replyTo?: ReplyMeta | null; forwarded?: boolean },
 ): Promise<void> {
   const db = getFirestoreDb();
   const msgRef = doc(collection(db, 'chats', chatId, 'messages'));
@@ -1216,6 +1273,14 @@ export async function sendMessage(
             : ''
   ).slice(0, 140);
 
+  const cleanReplyTo = options?.replyTo
+    ? {
+        messageId: options.replyTo.messageId,
+        senderUsername: options.replyTo.senderUsername,
+        snippet: options.replyTo.snippet.slice(0, 160),
+      }
+    : null;
+
   const batch = writeBatch(db);
   batch.set(msgRef, {
     senderId: profile.id,
@@ -1223,6 +1288,8 @@ export async function sendMessage(
     senderColor: profile.color,
     body,
     ...(attachmentMeta ? { attachment: attachmentMeta } : {}),
+    ...(cleanReplyTo ? { replyTo: cleanReplyTo } : {}),
+    ...(options?.forwarded ? { forwarded: true } : {}),
     createdAt: serverTimestamp(),
     expiresAt: Timestamp.fromMillis(nowMs + TWENTY_FOUR_HOURS_MS),
   });
@@ -1314,6 +1381,95 @@ export function subscribeToTyping(
     },
     () => {
       onTypingUsers([]);
+    },
+  );
+}
+
+export async function deleteMessage(chatId: string, messageId: string): Promise<void> {
+  const db = getFirestoreDb();
+  const path = `chats/${chatId}/messages/${messageId}`;
+  try {
+    await deleteDoc(doc(db, 'chats', chatId, 'messages', messageId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function toggleMessageReaction(
+  chatId: string,
+  messageId: string,
+  profile: Profile,
+  emoji: string,
+  currentEmoji?: string | null,
+): Promise<void> {
+  const db = getFirestoreDb();
+  const reactionId = `${messageId}_${profile.id}`;
+  const path = `chats/${chatId}/reactions/${reactionId}`;
+  const ref = doc(db, 'chats', chatId, 'reactions', reactionId);
+
+  try {
+    if (currentEmoji === emoji) {
+      await deleteDoc(ref);
+    } else {
+      await setDoc(ref, {
+        messageId,
+        userId: profile.id,
+        username: profile.username,
+        emoji: emoji.slice(0, 16),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export function subscribeToReactions(
+  chatId: string,
+  onReactions: (reactions: MessageReaction[]) => void,
+): () => void {
+  const db = getFirestoreDb();
+  return onSnapshot(
+    collection(db, 'chats', chatId, 'reactions'),
+    (snapshot) => {
+      const list: MessageReaction[] = snapshot.docs.map((docSnap) => {
+        const data = docSnap.data();
+        return {
+          id: docSnap.id,
+          messageId: String(data.messageId ?? ''),
+          userId: String(data.userId ?? ''),
+          username: String(data.username ?? 'Anonymous'),
+          emoji: String(data.emoji ?? ''),
+          updatedAt: toIso(data.updatedAt),
+        };
+      });
+      onReactions(list);
+    },
+    () => {
+      onReactions([]);
+    },
+  );
+}
+
+export function subscribeToReadReceipts(
+  chatId: string,
+  onReceipts: (receipts: ChatReadReceipt[]) => void,
+): () => void {
+  const db = getFirestoreDb();
+  return onSnapshot(
+    collection(db, 'chats', chatId, 'readReceipts'),
+    (snapshot) => {
+      const list: ChatReadReceipt[] = snapshot.docs.map((docSnap) => {
+        const data = docSnap.data();
+        return {
+          userId: String(data.userId ?? docSnap.id),
+          lastReadAt: toIso(data.lastReadAt),
+        };
+      });
+      onReceipts(list);
+    },
+    () => {
+      onReceipts([]);
     },
   );
 }

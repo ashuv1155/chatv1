@@ -76,6 +76,26 @@ export interface AttachmentMeta {
   chunkCount: number;
 }
 
+export interface ReplyMeta {
+  messageId: string;
+  senderUsername: string;
+  snippet: string;
+}
+
+export interface MessageReaction {
+  id: string;
+  messageId: string;
+  userId: string;
+  username: string;
+  emoji: string;
+  updatedAt: string;
+}
+
+export interface ChatReadReceipt {
+  userId: string;
+  lastReadAt: string;
+}
+
 export interface ChatMessage {
   id: string;
   chatId: string;
@@ -84,6 +104,8 @@ export interface ChatMessage {
   senderColor: string;
   body: string;
   attachment?: AttachmentMeta | null;
+  replyTo?: ReplyMeta | null;
+  forwarded?: boolean;
   createdAt: string;
   expiresAt?: string | null;
   pending?: boolean;

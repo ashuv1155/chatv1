@@ -3,7 +3,11 @@ import type { DocumentData, QueryDocumentSnapshot } from 'firebase/firestore';
 import {
   ArrowLeft,
   Check,
+  CheckCheck,
   ChevronUp,
+  Copy,
+  CornerUpLeft,
+  CornerUpRight,
   Download,
   Eye,
   EyeOff,
@@ -14,18 +18,23 @@ import {
   Lock,
   LogOut,
   MessageSquarePlus,
+  MoreHorizontal,
   Paperclip,
+  Plus,
   Send,
   ShieldBan,
+  Trash2,
   UserPlus,
   Users,
   X,
 } from 'lucide-react';
 import { Avatar } from './Avatar';
+import { ForwardModal } from './ForwardModal';
 import {
   MAX_ATTACHMENT_BYTES,
   approveJoinRequest,
   declineJoinRequest,
+  deleteMessage,
   fetchAttachmentBlobUrl,
   fetchChatMembers,
   fetchChatMetadata,
@@ -36,25 +45,33 @@ import {
   setTypingStatus,
   subscribeToAdminJoinRequests,
   subscribeToLatestMessages,
+  subscribeToReactions,
+  subscribeToReadReceipts,
   subscribeToTyping,
+  toggleMessageReaction,
 } from '../lib/api';
 import type {
   AttachmentKind,
   AttachmentMeta,
   ChatMessage,
+  ChatReadReceipt,
   ChatSummary,
   GroupVisibility,
   JoinRequest,
+  MessageReaction,
   Profile,
+  ReplyMeta,
   TypingParticipant,
 } from '../types';
 
 interface ChatViewProps {
   chat: ChatSummary;
+  allChats: ChatSummary[];
   currentUser: Profile;
   blockedUserIds: Set<string>;
   typingEnabled: boolean;
   onChatViewed?: (chatId: string) => void;
+  onSelectChat?: (chatId: string) => void;
   onBackMobile: () => void;
   onLeaveGroup: (chatId: string) => Promise<void>;
   onStartDm: (targetUserId: string) => Promise<void>;
@@ -67,6 +84,9 @@ interface ChatViewProps {
   onRequestBlock: (target: { userId: string; username: string; color?: string }) => void;
   onToast: (message: string) => void;
 }
+
+const PRIMARY_REACTIONS = ['🔥', '🙌', '😭', '🙈', '🙏', '🤐', '✨'];
+const EXTRA_REACTIONS = ['❤️', '😂', '👍', '🎉', '😮', '💯', '👀', '🫡'];
 
 function formatMessageTime(iso: string): string {
   const d = new Date(iso);
@@ -90,6 +110,15 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function buildMessageSnippet(msg: ChatMessage): string {
+  const clean = msg.body.trim();
+  if (clean) return clean.slice(0, 140);
+  if (msg.attachment?.kind === 'view_once_photo') return 'View-once photo';
+  if (msg.attachment?.kind === 'photo') return `Photo: ${msg.attachment.fileName}`;
+  if (msg.attachment) return `File: ${msg.attachment.fileName}`;
+  return 'Message';
+}
+
 interface StagedAttachment {
   file: File;
   isImage: boolean;
@@ -99,10 +128,12 @@ interface StagedAttachment {
 
 export const ChatView: React.FC<ChatViewProps> = ({
   chat,
+  allChats,
   currentUser,
   blockedUserIds,
   typingEnabled,
   onChatViewed,
+  onSelectChat,
   onBackMobile,
   onLeaveGroup,
   onStartDm,
@@ -135,11 +166,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [processingReqId, setProcessingReqId] = useState<string | null>(null);
 
   const [draft, setDraft] = useState('');
+  const [replyingTo, setReplyingTo] = useState<ReplyMeta | null>(null);
   const [stagedAttachment, setStagedAttachment] = useState<StagedAttachment | null>(null);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
   const [startingDmId, setStartingDmId] = useState<string | null>(null);
+
+  const [reactions, setReactions] = useState<MessageReaction[]>([]);
+  const [readReceipts, setReadReceipts] = useState<ChatReadReceipt[]>([]);
+  const [actionMessage, setActionMessage] = useState<ChatMessage | null>(null);
+  const [showMoreEmojis, setShowMoreEmojis] = useState(false);
+  const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
 
   // Attachment Blob URL caches and lightbox states
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
@@ -157,6 +196,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [typingClockMs, setTypingClockMs] = useState(() => Date.now());
 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const recentSendTimesRef = useRef<number[]>([]);
@@ -182,7 +222,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
     el.scrollTop = el.scrollHeight;
   }, []);
 
-  // Revoke staged preview URL on change/unmount
   useEffect(() => {
     return () => {
       if (stagedAttachment?.previewUrl) {
@@ -191,14 +230,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
     };
   }, [stagedAttachment]);
 
-  // Revoke cached photo object URLs on chat switch/unmount
   useEffect(() => {
     return () => {
       Object.values(photoUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
     };
   }, [chat.id]);
 
-  // Load member list, chat metadata, pending join requests (if admin), and subscribe ONLY to open chat
+  // Load member list, chat metadata, messages, typing, reactions, and read receipts
   useEffect(() => {
     let cancelled = false;
     hasScrolledInitialRef.current = false;
@@ -213,6 +251,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setLoadError(null);
     setSendError(null);
     setJoinRequests([]);
+    setReactions([]);
+    setReadReceipts([]);
+    setReplyingTo(null);
+    setActionMessage(null);
+    setShowMoreEmojis(false);
     setPhotoUrls({});
     setPhotoLoading({});
     setPhotoErrors({});
@@ -262,11 +305,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
       }
     });
 
+    const unsubReactions = subscribeToReactions(chat.id, (list) => {
+      if (!cancelled) setReactions(list);
+    });
+
+    const unsubReceipts = subscribeToReadReceipts(chat.id, (list) => {
+      if (!cancelled) setReadReceipts(list);
+    });
+
     const activeChatIdForCleanup = chat.id;
     return () => {
       cancelled = true;
       unsubscribe();
       unsubTyping();
+      unsubReactions();
+      unsubReceipts();
       if (typingIdleTimerRef.current) {
         window.clearTimeout(typingIdleTimerRef.current);
         typingIdleTimerRef.current = null;
@@ -296,7 +349,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
     });
   }, [chat.id, chat.type, chatMeta, currentUser.id]);
 
-  // Periodically sweep stale remote typing indicators if someone disconnects mid-typing
   useEffect(() => {
     if (rawTypingUsers.length === 0) return;
     const timer = window.setInterval(() => {
@@ -335,6 +387,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   }, [typingEnabled, clearTypingIndicator]);
 
+  // Close action sheet with Escape
+  useEffect(() => {
+    if (!actionMessage) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setActionMessage(null);
+        setShowMoreEmojis(false);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [actionMessage]);
+
   const visibleMessages = useMemo(() => {
     const liveIds = new Set(liveMessages.map((m) => m.id));
     const merged = [
@@ -343,6 +408,55 @@ export const ChatView: React.FC<ChatViewProps> = ({
     ];
     return merged.filter((m) => !blockedUserIds.has(m.senderId));
   }, [olderMessages, liveMessages, blockedUserIds]);
+
+  // Group reactions by messageId -> aggregated emoji counts + user's own reaction
+  const reactionsByMessage = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        myEmoji: string | null;
+        groups: Array<{ emoji: string; count: number; mine: boolean }>;
+      }
+    >();
+
+    for (const r of reactions) {
+      if (!r.messageId || blockedUserIds.has(r.userId)) continue;
+      let entry = map.get(r.messageId);
+      if (!entry) {
+        entry = { myEmoji: null, groups: [] };
+        map.set(r.messageId, entry);
+      }
+      if (r.userId === currentUser.id) {
+        entry.myEmoji = r.emoji;
+      }
+      const existingGroup = entry.groups.find((g) => g.emoji === r.emoji);
+      if (existingGroup) {
+        existingGroup.count += 1;
+        if (r.userId === currentUser.id) existingGroup.mine = true;
+      } else {
+        entry.groups.push({
+          emoji: r.emoji,
+          count: 1,
+          mine: r.userId === currentUser.id,
+        });
+      }
+    }
+
+    return map;
+  }, [reactions, currentUser.id, blockedUserIds]);
+
+  // Latest read timestamp by any member other than currentUser
+  const maxPeerReadMs = useMemo(() => {
+    let maxMs = 0;
+    for (const receipt of readReceipts) {
+      if (receipt.userId === currentUser.id) continue;
+      const ms = new Date(receipt.lastReadAt).getTime();
+      if (!Number.isNaN(ms) && ms > maxMs) {
+        maxMs = ms;
+      }
+    }
+    return maxMs;
+  }, [readReceipts, currentUser.id]);
 
   // Auto-load standard photos & check view-once status for visible messages
   useEffect(() => {
@@ -515,8 +629,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setSendError(null);
     const outgoingText = trimmed;
     const outgoingAttachment = stagedAttachment;
+    const outgoingReply = replyingTo;
     setDraft('');
     setStagedAttachment(null);
+    setReplyingTo(null);
 
     const attachmentKind: AttachmentKind | undefined = outgoingAttachment
       ? outgoingAttachment.isImage
@@ -535,6 +651,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           ? { file: outgoingAttachment.file, kind: attachmentKind }
           : undefined,
         dmPartner?.id ?? null,
+        outgoingReply ? { replyTo: outgoingReply } : undefined,
       );
       recentSendTimesRef.current.push(Date.now());
       requestAnimationFrame(() => scrollToBottom());
@@ -542,6 +659,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setDraft(outgoingText);
       if (outgoingAttachment) {
         setStagedAttachment(outgoingAttachment);
+      }
+      if (outgoingReply) {
+        setReplyingTo(outgoingReply);
       }
       const msg = err instanceof Error ? err.message : 'Failed to send message.';
       if (msg.toLowerCase().includes('rate limit') || msg.toLowerCase().includes('permission')) {
@@ -586,6 +706,60 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void handleSend();
+    }
+  };
+
+  const handleReact = async (msg: ChatMessage, emoji: string) => {
+    if (currentUser.banned) return;
+    const currentEmoji = reactionsByMessage.get(msg.id)?.myEmoji ?? null;
+    setActionMessage(null);
+    setShowMoreEmojis(false);
+    try {
+      await toggleMessageReaction(chat.id, msg.id, currentUser, emoji, currentEmoji);
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Could not save reaction.');
+    }
+  };
+
+  const handleCopyMessage = async (msg: ChatMessage) => {
+    const text = buildMessageSnippet(msg);
+    setActionMessage(null);
+    try {
+      await navigator.clipboard.writeText(msg.body || text);
+      onToast('Copied to clipboard.');
+    } catch {
+      onToast('Copy failed in this browser.');
+    }
+  };
+
+  const handleReplyMessage = (msg: ChatMessage) => {
+    setReplyingTo({
+      messageId: msg.id,
+      senderUsername: msg.senderUsername,
+      snippet: buildMessageSnippet(msg),
+    });
+    setActionMessage(null);
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  };
+
+  const handleDeleteMessage = async (msg: ChatMessage) => {
+    if (msg.senderId !== currentUser.id || deletingMessageId) return;
+    setDeletingMessageId(msg.id);
+    setActionMessage(null);
+    try {
+      await deleteMessage(chat.id, msg.id);
+      onToast('Message deleted.');
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Could not delete message.');
+    } finally {
+      setDeletingMessageId(null);
+    }
+  };
+
+  const scrollToMessageById = (messageId: string) => {
+    const el = document.getElementById(`msg-${messageId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   };
 
@@ -683,16 +857,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
       ? dmPartner?.username ?? 'Direct Message'
       : chat.name ?? 'Group';
 
+  const headerSubtitle =
+    activeTypists.length > 0
+      ? activeTypists.length === 1
+        ? `${activeTypists[0].username} is typing...`
+        : `${activeTypists.length} people typing...`
+      : chat.type === 'dm'
+        ? 'Direct chat · 24h auto-delete'
+        : `${members.length} ${members.length === 1 ? 'member' : 'members'} · ${
+            isPrivateGroup ? 'Private' : 'Public'
+          } · 24h`;
+
   return (
-    <div className="h-full flex bg-slate-50 dark:bg-[#0B0E14] relative overflow-hidden">
+    <div className="h-full flex bg-white dark:bg-[#0B0E14] relative overflow-hidden">
       <div className="flex-1 flex flex-col min-w-0 h-full">
-        <header className="h-14 px-3 sm:px-5 border-b border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#111622] flex items-center justify-between gap-3 shrink-0">
+        {/* Clean Modern Top Header */}
+        <header className="h-15 px-3 sm:px-5 border-b border-slate-200/80 dark:border-white/[0.08] bg-white/90 dark:bg-[#111622]/90 backdrop-blur-md flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
               onClick={onBackMobile}
               aria-label="Back to chat list"
-              className="lg:hidden min-h-[44px] min-w-[44px] -ml-1.5 rounded-xl flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.05]"
+              className="lg:hidden min-h-[44px] min-w-[44px] -ml-1.5 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
@@ -701,7 +887,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <button
                 type="button"
                 onClick={() => onOpenProfile(dmPartner.id)}
-                className="flex items-center gap-2.5 min-w-0 text-left hover:opacity-80 transition-opacity"
+                className="flex items-center gap-3 min-w-0 text-left hover:opacity-80 transition-opacity"
                 title={`View ${dmPartner.username}'s profile`}
               >
                 <Avatar
@@ -711,32 +897,43 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   size="sm"
                 />
                 <div className="min-w-0">
-                  <h1 className="text-sm sm:text-base font-semibold tracking-tight truncate">
+                  <h1 className="text-sm sm:text-base font-bold tracking-tight truncate">
                     {headerTitle}
                   </h1>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 truncate tabular-nums">
-                    Direct chat · 24h auto-delete
+                  <p
+                    className={`text-xs truncate tabular-nums ${
+                      activeTypists.length > 0
+                        ? 'text-[#2B84F6] font-medium'
+                        : 'text-slate-500 dark:text-slate-400'
+                    }`}
+                  >
+                    {headerSubtitle}
                   </p>
                 </div>
               </button>
             ) : (
               <>
                 <div
-                  className={`h-8 w-8 shrink-0 rounded-xl flex items-center justify-center ${
+                  className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${
                     isPrivateGroup
                       ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
-                      : 'bg-slate-200 dark:bg-[#1B2336] text-slate-600 dark:text-slate-300'
+                      : 'bg-slate-100 dark:bg-[#1B2336] text-slate-600 dark:text-slate-300'
                   }`}
                 >
                   {isPrivateGroup ? <Lock className="w-4 h-4" /> : <Hash className="w-4 h-4" />}
                 </div>
                 <div className="min-w-0">
-                  <h1 className="text-sm sm:text-base font-semibold tracking-tight truncate">
+                  <h1 className="text-sm sm:text-base font-bold tracking-tight truncate">
                     {headerTitle}
                   </h1>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 truncate tabular-nums">
-                    {members.length} {members.length === 1 ? 'member' : 'members'} ·{' '}
-                    {isPrivateGroup ? 'Private' : 'Public'} · 24h messages
+                  <p
+                    className={`text-xs truncate tabular-nums ${
+                      activeTypists.length > 0
+                        ? 'text-[#2B84F6] font-medium'
+                        : 'text-slate-500 dark:text-slate-400'
+                    }`}
+                  >
+                    {headerSubtitle}
                   </p>
                 </div>
               </>
@@ -748,7 +945,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <button
                 type="button"
                 onClick={() => setMembersOpen(true)}
-                className="min-h-[40px] px-2.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap tabular-nums"
+                className="min-h-[38px] px-3 py-1.5 rounded-full bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap tabular-nums"
               >
                 <UserPlus className="w-3.5 h-3.5" />
                 <span>Requests ({joinRequests.length})</span>
@@ -764,7 +961,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 })
               }
               title="Report"
-              className="min-h-[40px] px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-medium text-slate-700 dark:text-slate-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              aria-label="Report"
+              className="min-h-[38px] px-2.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-medium text-slate-700 dark:text-slate-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
             >
               <Flag className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Report</span>
@@ -781,7 +979,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   })
                 }
                 title="Block user"
-                className="min-h-[40px] px-2.5 py-1.5 rounded-xl border border-red-500/30 hover:bg-red-500/10 text-xs font-medium text-red-600 dark:text-red-400 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                aria-label="Block user"
+                className="min-h-[38px] px-2.5 py-1.5 rounded-full border border-red-500/30 hover:bg-red-500/10 text-xs font-medium text-red-600 dark:text-red-400 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
               >
                 <ShieldBan className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Block</span>
@@ -792,9 +991,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
               type="button"
               onClick={() => setMembersOpen((prev) => !prev)}
               aria-expanded={membersOpen}
-              className={`min-h-[40px] px-2.5 py-1.5 rounded-xl border text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap tabular-nums ${
+              title="Members"
+              className={`min-h-[38px] px-3 py-1.5 rounded-full border text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap tabular-nums ${
                 membersOpen
-                  ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300'
+                  ? 'border-[#2B84F6]/40 bg-[#2B84F6]/10 text-[#2B84F6]'
                   : 'border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-700 dark:text-slate-300'
               }`}
             >
@@ -808,7 +1008,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 onClick={handleLeave}
                 disabled={leaving}
                 title="Leave group"
-                className="min-h-[40px] px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-white/[0.08] hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 text-xs font-medium text-slate-600 dark:text-slate-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                className="min-h-[38px] px-2.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 text-xs font-medium text-slate-600 dark:text-slate-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">{leaving ? 'Leaving...' : 'Leave'}</span>
@@ -817,10 +1017,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
         </header>
 
+        {/* Scrollable Message Thread */}
         <div
           ref={scrollContainerRef}
           onScroll={handleScroll}
-          className="flex-1 overflow-y-auto chat-scroll px-4 sm:px-6 py-4 space-y-4"
+          className="flex-1 overflow-y-auto chat-scroll px-3 sm:px-6 py-4 space-y-3"
         >
           {hasMore && (
             <div className="flex justify-center pb-2">
@@ -828,7 +1029,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 onClick={handleLoadOlder}
                 disabled={loadingOlder}
-                className="min-h-[36px] px-3.5 py-1.5 rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#111622] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-medium text-slate-600 dark:text-slate-300 inline-flex items-center gap-1.5 transition-colors"
+                className="min-h-[36px] px-3.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#111622] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-medium text-slate-600 dark:text-slate-300 inline-flex items-center gap-1.5 transition-colors"
               >
                 <ChevronUp className="w-3.5 h-3.5" />
                 <span>{loadingOlder ? 'Loading older...' : 'Load older messages'}</span>
@@ -838,18 +1039,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
           {loadingInitial ? (
             <div className="space-y-4 py-4">
-              {[0, 1, 2, 3, 4].map((i) => (
-                <div key={i} className="flex items-start gap-3">
-                  <div className="h-9 w-9 rounded-xl bg-slate-200 dark:bg-white/[0.06] animate-pulse shrink-0" />
-                  <div className="space-y-2 flex-1 max-w-md">
-                    <div className="h-3 w-28 rounded bg-slate-200 dark:bg-white/[0.06] animate-pulse" />
-                    <div className="h-10 w-full rounded-xl bg-slate-200 dark:bg-white/[0.06] animate-pulse" />
-                  </div>
+              {[0, 1, 2, 3].map((i) => (
+                <div
+                  key={i}
+                  className={`flex ${i % 2 === 1 ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div className="h-14 w-64 rounded-2xl bg-slate-100 dark:bg-white/[0.06] animate-pulse" />
                 </div>
               ))}
             </div>
           ) : loadError ? (
-            <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-300">
+            <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-300">
               {loadError}
             </div>
           ) : visibleMessages.length === 0 ? (
@@ -858,7 +1058,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 No active messages
               </p>
               <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs leading-relaxed">
-                Say hello as {currentUser.username}. Messages in this room auto-delete after 24 hours.
+                Say hello as {currentUser.username}. Messages auto-delete after 24 hours.
               </p>
             </div>
           ) : (
@@ -869,190 +1069,274 @@ export const ChatView: React.FC<ChatViewProps> = ({
               const showDayDivider =
                 !prevMsg || formatMessageDay(prevMsg.createdAt) !== formatMessageDay(msg.createdAt);
               const att = msg.attachment ?? null;
+              const msgReactions = reactionsByMessage.get(msg.id);
+              const msgCreatedMs = new Date(msg.createdAt).getTime();
+              const isReadByPeer = isOwn && !msg.pending && maxPeerReadMs >= msgCreatedMs;
+              const showGroupSenderName = !isOwn && chat.type === 'group';
 
               return (
                 <React.Fragment key={msg.id}>
                   {showDayDivider && (
-                    <div className="flex items-center gap-3 py-2">
-                      <div className="h-px flex-1 bg-slate-200 dark:bg-white/[0.08]" />
+                    <div className="flex items-center justify-center py-2">
                       <span className="text-xs font-medium text-slate-400 dark:text-slate-500 tabular-nums">
                         {formatMessageDay(msg.createdAt)}
                       </span>
-                      <div className="h-px flex-1 bg-slate-200 dark:bg-white/[0.08]" />
                     </div>
                   )}
 
-                  <div className="group message-enter flex items-start gap-3">
-                    <button
-                      type="button"
-                      onClick={() => onOpenProfile(msg.senderId)}
-                      title={`View ${msg.senderUsername}'s profile`}
-                      className="shrink-0 rounded-xl hover:opacity-85 transition-opacity"
-                    >
-                      <Avatar
-                        username={senderProfile?.username ?? msg.senderUsername}
-                        color={senderProfile?.color ?? msg.senderColor}
-                        avatarUrl={senderProfile?.avatarUrl}
-                        size="sm"
-                      />
-                    </button>
+                  <div
+                    id={`msg-${msg.id}`}
+                    className={`group message-enter flex items-end gap-2 ${
+                      isOwn ? 'justify-end' : 'justify-start'
+                    }`}
+                  >
+                    {!isOwn && chat.type === 'group' && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenProfile(msg.senderId)}
+                        title={`View ${msg.senderUsername}'s profile`}
+                        className="shrink-0 rounded-full hover:opacity-85 transition-opacity mb-5"
+                      >
+                        <Avatar
+                          username={senderProfile?.username ?? msg.senderUsername}
+                          color={senderProfile?.color ?? msg.senderColor}
+                          avatarUrl={senderProfile?.avatarUrl}
+                          size="xs"
+                        />
+                      </button>
+                    )}
 
-                    <div className="min-w-0 flex-1 space-y-1.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <button
-                            type="button"
-                            onClick={() => onOpenProfile(msg.senderId)}
-                            className={`text-sm font-semibold truncate hover:underline ${
-                              isOwn
-                                ? 'text-indigo-600 dark:text-indigo-400'
-                                : 'text-slate-900 dark:text-slate-100'
-                            }`}
-                          >
-                            {msg.senderUsername}
-                          </button>
-                          <span className="text-xs text-slate-400 dark:text-slate-500 tabular-nums shrink-0">
-                            {formatMessageTime(msg.createdAt)}
-                          </span>
+                    <div
+                      className={`max-w-[82%] sm:max-w-[70%] flex flex-col ${
+                        isOwn ? 'items-end' : 'items-start'
+                      }`}
+                    >
+                      {showGroupSenderName && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenProfile(msg.senderId)}
+                          className="text-xs font-semibold text-slate-600 dark:text-slate-400 hover:underline px-1 mb-1"
+                        >
+                          {msg.senderUsername}
+                        </button>
+                      )}
+
+                      <div
+                        className={`flex items-center gap-1.5 ${
+                          isOwn ? 'flex-row-reverse' : 'flex-row'
+                        }`}
+                      >
+                        <div
+                          onClick={() => {
+                            setActionMessage(msg);
+                            setShowMoreEmojis(false);
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setActionMessage(msg);
+                              setShowMoreEmojis(false);
+                            }
+                          }}
+                          title="Tap for reactions, reply, copy, forward, or delete"
+                          className={`cursor-pointer select-text px-4 py-2.5 transition-opacity ${
+                            isOwn
+                              ? 'bg-[#2B84F6] text-white rounded-2xl rounded-tr-sm'
+                              : 'bg-[#F3F4F6] dark:bg-[#192132] text-slate-900 dark:text-slate-100 rounded-2xl rounded-tl-sm'
+                          }`}
+                        >
+                          {msg.forwarded && (
+                            <p
+                              className={`text-[11px] font-medium inline-flex items-center gap-1 mb-1 ${
+                                isOwn ? 'text-white/80' : 'text-slate-500 dark:text-slate-400'
+                              }`}
+                            >
+                              <CornerUpRight className="w-3 h-3" />
+                              <span>Forwarded</span>
+                            </p>
+                          )}
+
+                          {msg.replyTo && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                scrollToMessageById(msg.replyTo!.messageId);
+                              }}
+                              className={`w-full text-left rounded-xl px-2.5 py-1.5 mb-2 text-xs transition-colors ${
+                                isOwn
+                                  ? 'bg-white/15 hover:bg-white/20 text-white'
+                                  : 'bg-black/[0.05] dark:bg-white/[0.07] hover:bg-black/[0.08] text-slate-700 dark:text-slate-200'
+                              }`}
+                            >
+                              <p className="font-semibold truncate">{msg.replyTo.senderUsername}</p>
+                              <p className="opacity-85 line-clamp-1">{msg.replyTo.snippet}</p>
+                            </button>
+                          )}
+
+                          {msg.body && (
+                            <p className="text-sm sm:text-[15px] leading-relaxed whitespace-pre-wrap break-words">
+                              {msg.body}
+                            </p>
+                          )}
+
+                          {att && att.kind === 'photo' && (
+                            <div
+                              className={msg.body ? 'pt-2' : ''}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {photoUrls[att.id] ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setLightbox({
+                                      url: photoUrls[att.id],
+                                      fileName: att.fileName,
+                                      viewOnce: false,
+                                    })
+                                  }
+                                  className="block max-w-xs sm:max-w-sm rounded-xl overflow-hidden border border-black/10 dark:border-white/[0.1] hover:opacity-95 transition-opacity"
+                                >
+                                  <img
+                                    src={photoUrls[att.id]}
+                                    alt={att.fileName}
+                                    className="max-h-72 w-auto object-cover"
+                                  />
+                                </button>
+                              ) : photoErrors[att.id] ? (
+                                <div className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-black/10 text-xs">
+                                  <ImageIcon className="w-4 h-4" />
+                                  <span>{photoErrors[att.id]}</span>
+                                </div>
+                              ) : (
+                                <div className="h-40 w-56 rounded-xl bg-black/10 dark:bg-white/[0.08] animate-pulse" />
+                              )}
+                            </div>
+                          )}
+
+                          {att && att.kind === 'view_once_photo' && (
+                            <div
+                              className={msg.body ? 'pt-2' : ''}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {isOwn ? (
+                                <div className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white/15 text-xs text-white">
+                                  <EyeOff className="w-4 h-4 shrink-0" />
+                                  <span>View-once photo · {formatBytes(att.sizeBytes)}</span>
+                                </div>
+                              ) : viewedOnceMap[msg.id] ? (
+                                <div className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-black/[0.06] dark:bg-white/[0.06] text-xs text-slate-500 dark:text-slate-400">
+                                  <EyeOff className="w-4 h-4 shrink-0" />
+                                  <span>View-once photo · Opened</span>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenViewOnce(msg, att)}
+                                  disabled={Boolean(photoLoading[att.id])}
+                                  className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-[#2B84F6]/12 hover:bg-[#2B84F6]/20 text-[#2B84F6] text-xs font-semibold inline-flex items-center gap-2 transition-colors"
+                                >
+                                  <Eye className="w-4 h-4 shrink-0" />
+                                  <span>
+                                    {photoLoading[att.id]
+                                      ? 'Opening photo...'
+                                      : `View photo once · ${formatBytes(att.sizeBytes)}`}
+                                  </span>
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {att && att.kind === 'file' && (
+                            <div
+                              className={msg.body ? 'pt-2' : ''}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <div
+                                className={`inline-flex items-center gap-3 px-3 py-2 rounded-xl max-w-full ${
+                                  isOwn
+                                    ? 'bg-white/15 text-white'
+                                    : 'bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08]'
+                                }`}
+                              >
+                                <FileText className="w-5 h-5 shrink-0" />
+                                <div className="min-w-0">
+                                  <p className="text-xs sm:text-sm font-medium truncate max-w-[180px] sm:max-w-xs">
+                                    {att.fileName}
+                                  </p>
+                                  <p
+                                    className={`text-xs tabular-nums ${
+                                      isOwn ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'
+                                    }`}
+                                  >
+                                    {formatBytes(att.sizeBytes)}
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDownloadFile(att)}
+                                  disabled={downloadingId === att.id}
+                                  className={`min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap shrink-0 ${
+                                    isOwn
+                                      ? 'bg-white/20 hover:bg-white/30 text-white'
+                                      : 'bg-slate-100 dark:bg-white/[0.08] hover:bg-slate-200 dark:hover:bg-white/[0.14]'
+                                  }`}
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                  <span>{downloadingId === att.id ? 'Saving...' : 'Download'}</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
 
-                        {!isOwn && (
-                          <div className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100 flex items-center gap-1 transition-opacity">
-                            {chat.type === 'group' && (
-                              <button
-                                type="button"
-                                onClick={() => handleStartDm(msg.senderId)}
-                                title={`Message ${msg.senderUsername}`}
-                                className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-500 hover:bg-slate-200/70 dark:hover:bg-white/[0.06]"
-                              >
-                                <MessageSquarePlus className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() =>
-                                onRequestReport({
-                                  userId: msg.senderId,
-                                  label: msg.senderUsername,
-                                  messageId: msg.id,
-                                })
-                              }
-                              title={`Report ${msg.senderUsername}`}
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-slate-200/70 dark:hover:bg-white/[0.06]"
-                            >
-                              <Flag className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                onRequestBlock({
-                                  userId: msg.senderId,
-                                  username: msg.senderUsername,
-                                  color: msg.senderColor,
-                                })
-                              }
-                              title={`Block ${msg.senderUsername}`}
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-slate-200/70 dark:hover:bg-white/[0.06]"
-                            >
-                              <ShieldBan className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActionMessage(msg);
+                            setShowMoreEmojis(false);
+                          }}
+                          aria-label="Message actions"
+                          className="opacity-0 group-hover:opacity-100 focus:opacity-100 min-h-[32px] min-w-[32px] rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-all shrink-0"
+                        >
+                          <MoreHorizontal className="w-4 h-4" />
+                        </button>
                       </div>
 
-                      {msg.body && (
-                        <p className="text-sm sm:text-[15px] text-slate-800 dark:text-slate-200 leading-relaxed whitespace-pre-wrap break-words">
-                          {msg.body}
-                        </p>
+                      {/* Reactions Row */}
+                      {msgReactions && msgReactions.groups.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1 mt-1 px-1">
+                          {msgReactions.groups.map((grp) => (
+                            <button
+                              key={grp.emoji}
+                              type="button"
+                              onClick={() => handleReact(msg, grp.emoji)}
+                              className={`min-h-[26px] px-2 py-0.5 rounded-full text-xs inline-flex items-center gap-1 border transition-colors tabular-nums ${
+                                grp.mine
+                                  ? 'bg-[#2B84F6]/12 border-[#2B84F6]/40 text-[#2B84F6] font-semibold'
+                                  : 'bg-white dark:bg-[#161C2C] border-slate-200 dark:border-white/[0.1] text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-white/[0.06]'
+                              }`}
+                            >
+                              <span>{grp.emoji}</span>
+                              {grp.count > 1 && <span>{grp.count}</span>}
+                            </button>
+                          ))}
+                        </div>
                       )}
 
-                      {att && att.kind === 'photo' && (
-                        <div className="pt-1">
-                          {photoUrls[att.id] ? (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setLightbox({
-                                  url: photoUrls[att.id],
-                                  fileName: att.fileName,
-                                  viewOnce: false,
-                                })
-                              }
-                              className="block max-w-xs sm:max-w-sm rounded-xl overflow-hidden border border-slate-200 dark:border-white/[0.1] bg-slate-200/40 dark:bg-white/[0.03] hover:opacity-95 transition-opacity"
-                            >
-                              <img
-                                src={photoUrls[att.id]}
-                                alt={att.fileName}
-                                className="max-h-72 w-auto object-cover"
-                              />
-                            </button>
-                          ) : photoErrors[att.id] ? (
-                            <div className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 dark:border-white/[0.08] text-xs text-slate-500 dark:text-slate-400">
-                              <ImageIcon className="w-4 h-4" />
-                              <span>{photoErrors[att.id]}</span>
-                            </div>
+                      {/* Timestamp & Read Receipt */}
+                      <div className="flex items-center gap-1 mt-1 px-1 text-[11px] text-slate-400 dark:text-slate-500 tabular-nums">
+                        <span>{formatMessageTime(msg.createdAt)}</span>
+                        {isOwn && (
+                          isReadByPeer ? (
+                            <CheckCheck className="w-3.5 h-3.5 text-[#2B84F6]" aria-label="Read" />
                           ) : (
-                            <div className="h-40 w-56 rounded-xl bg-slate-200 dark:bg-white/[0.06] animate-pulse" />
-                          )}
-                        </div>
-                      )}
-
-                      {att && att.kind === 'view_once_photo' && (
-                        <div className="pt-1">
-                          {isOwn ? (
-                            <div className="inline-flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#111622] text-xs text-slate-600 dark:text-slate-300">
-                              <EyeOff className="w-4 h-4 text-indigo-500 shrink-0" />
-                              <span>
-                                View-once photo sent · {formatBytes(att.sizeBytes)}
-                              </span>
-                            </div>
-                          ) : viewedOnceMap[msg.id] ? (
-                            <div className="inline-flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/[0.08] bg-slate-100/70 dark:bg-white/[0.03] text-xs text-slate-500 dark:text-slate-400">
-                              <EyeOff className="w-4 h-4 shrink-0" />
-                              <span>View-once photo · Opened</span>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => handleOpenViewOnce(msg, att)}
-                              disabled={Boolean(photoLoading[att.id])}
-                              className="min-h-[42px] px-4 py-2 rounded-xl border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 text-xs font-semibold inline-flex items-center gap-2 transition-colors"
-                            >
-                              <Eye className="w-4 h-4 shrink-0" />
-                              <span>
-                                {photoLoading[att.id]
-                                  ? 'Opening photo...'
-                                  : `View photo once · ${formatBytes(att.sizeBytes)}`}
-                              </span>
-                            </button>
-                          )}
-                        </div>
-                      )}
-
-                      {att && att.kind === 'file' && (
-                        <div className="pt-1">
-                          <div className="inline-flex items-center gap-3 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#111622] max-w-full">
-                            <FileText className="w-5 h-5 text-indigo-500 shrink-0" />
-                            <div className="min-w-0">
-                              <p className="text-xs sm:text-sm font-medium truncate max-w-[200px] sm:max-w-xs">
-                                {att.fileName}
-                              </p>
-                              <p className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
-                                {formatBytes(att.sizeBytes)}
-                              </p>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadFile(att)}
-                              disabled={downloadingId === att.id}
-                              className="min-h-[36px] px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.12] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                              <span>{downloadingId === att.id ? 'Saving...' : 'Download'}</span>
-                            </button>
-                          </div>
-                        </div>
-                      )}
+                            <Check className="w-3.5 h-3.5 text-slate-400" aria-label="Sent" />
+                          )
+                        )}
+                      </div>
                     </div>
                   </div>
                 </React.Fragment>
@@ -1061,12 +1345,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
           )}
         </div>
 
-        <div className="p-3 sm:p-4 border-t border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#111622] shrink-0 space-y-2.5">
+        {/* Composer Dock */}
+        <div className="p-3 sm:p-4 border-t border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#111622] shrink-0 space-y-2.5">
           {activeTypists.length > 0 && (
             <div
               role="status"
               aria-live="polite"
-              className="flex items-center gap-2.5 px-1 pb-0.5 text-xs text-slate-600 dark:text-slate-300 message-enter"
+              className="flex items-center gap-2.5 px-1 text-xs text-slate-600 dark:text-slate-300 message-enter"
             >
               <div className="flex -space-x-1.5 shrink-0">
                 {activeTypists.slice(0, 3).map((typist) => (
@@ -1082,15 +1367,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
               <div className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-100 dark:bg-white/[0.06]">
                 <span
-                  className="typing-dot w-1.5 h-1.5 rounded-full bg-indigo-500"
+                  className="typing-dot w-1.5 h-1.5 rounded-full bg-[#2B84F6]"
                   style={{ animationDelay: '0ms' }}
                 />
                 <span
-                  className="typing-dot w-1.5 h-1.5 rounded-full bg-indigo-500"
+                  className="typing-dot w-1.5 h-1.5 rounded-full bg-[#2B84F6]"
                   style={{ animationDelay: '160ms' }}
                 />
                 <span
-                  className="typing-dot w-1.5 h-1.5 rounded-full bg-indigo-500"
+                  className="typing-dot w-1.5 h-1.5 rounded-full bg-[#2B84F6]"
                   style={{ animationDelay: '320ms' }}
                 />
               </div>
@@ -1104,6 +1389,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </span>
             </div>
           )}
+
+          {replyingTo && (
+            <div className="px-3.5 py-2 rounded-2xl bg-slate-100 dark:bg-[#0B0E14] flex items-center justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-[#2B84F6] inline-flex items-center gap-1">
+                  <CornerUpLeft className="w-3 h-3" />
+                  <span>Replying to {replyingTo.senderUsername}</span>
+                </p>
+                <p className="text-xs text-slate-600 dark:text-slate-400 truncate mt-0.5">
+                  {replyingTo.snippet}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReplyingTo(null)}
+                aria-label="Cancel reply"
+                className="min-h-[32px] min-w-[32px] rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-200/70 dark:hover:bg-white/[0.08] shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {sendError && (
             <p role="alert" className="text-xs text-red-600 dark:text-red-400 px-1">
               {sendError}
@@ -1111,16 +1419,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
           )}
 
           {stagedAttachment && (
-            <div className="p-2.5 rounded-xl border border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-[#0B0E14] flex items-center justify-between gap-3">
+            <div className="p-2.5 rounded-2xl border border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-[#0B0E14] flex items-center justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
                 {stagedAttachment.previewUrl ? (
                   <img
                     src={stagedAttachment.previewUrl}
                     alt="Selected preview"
-                    className="h-12 w-12 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-white/[0.1]"
+                    className="h-12 w-12 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-white/[0.1]"
                   />
                 ) : (
-                  <div className="h-12 w-12 rounded-lg bg-indigo-500/10 text-indigo-500 flex items-center justify-center shrink-0">
+                  <div className="h-12 w-12 rounded-xl bg-[#2B84F6]/10 text-[#2B84F6] flex items-center justify-center shrink-0">
                     <FileText className="w-5 h-5" />
                   </div>
                 )}
@@ -1141,9 +1449,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         prev ? { ...prev, viewOnce: !prev.viewOnce } : prev,
                       )
                     }
-                    className={`min-h-[36px] px-3 py-1 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                    className={`min-h-[36px] px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
                       stagedAttachment.viewOnce
-                        ? 'bg-indigo-600 text-white'
+                        ? 'bg-[#2B84F6] text-white'
                         : 'border border-slate-200 dark:border-white/[0.1] text-slate-700 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/[0.06]'
                     }`}
                   >
@@ -1160,7 +1468,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   type="button"
                   onClick={() => setStagedAttachment(null)}
                   aria-label="Remove attachment"
-                  className="min-h-[36px] min-w-[36px] rounded-lg flex items-center justify-center text-slate-500 hover:text-red-500 hover:bg-slate-200/70 dark:hover:bg-white/[0.06]"
+                  className="min-h-[36px] min-w-[36px] rounded-full flex items-center justify-center text-slate-500 hover:text-red-500 hover:bg-slate-200/70 dark:hover:bg-white/[0.06]"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -1169,11 +1477,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
           )}
 
           {currentUser.banned ? (
-            <div className="min-h-[44px] px-4 py-2.5 rounded-xl bg-red-500/10 border border-red-500/20 text-xs text-red-700 dark:text-red-300 flex items-center">
+            <div className="min-h-[44px] px-4 py-2.5 rounded-2xl bg-red-500/10 border border-red-500/20 text-xs text-red-700 dark:text-red-300 flex items-center">
               Your account is banned from sending messages.
             </div>
           ) : isDmBlocked ? (
-            <div className="min-h-[44px] px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-white/[0.04] text-xs text-slate-600 dark:text-slate-400 flex items-center">
+            <div className="min-h-[44px] px-4 py-2.5 rounded-2xl bg-slate-100 dark:bg-white/[0.04] text-xs text-slate-600 dark:text-slate-400 flex items-center">
               You blocked this user. Unblock them in Settings or their Profile to resume chatting.
             </div>
           ) : (
@@ -1198,7 +1506,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 disabled={sending}
                 title="Share photo or view-once photo (max 5 MB)"
                 aria-label="Share photo"
-                className="min-h-[44px] min-w-[44px] rounded-xl border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-600 dark:text-slate-300 flex items-center justify-center transition-colors shrink-0"
+                className="min-h-[44px] min-w-[44px] rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-600 dark:text-slate-300 flex items-center justify-center transition-colors shrink-0"
               >
                 <ImageIcon className="w-4 h-4" />
               </button>
@@ -1209,23 +1517,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 disabled={sending}
                 title="Attach file (max 5 MB)"
                 aria-label="Attach file"
-                className="min-h-[44px] min-w-[44px] rounded-xl border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-600 dark:text-slate-300 flex items-center justify-center transition-colors shrink-0"
+                className="min-h-[44px] min-w-[44px] rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-600 dark:text-slate-300 flex items-center justify-center transition-colors shrink-0"
               >
                 <Paperclip className="w-4 h-4" />
               </button>
 
               <div className="flex-1 relative">
                 <textarea
+                  ref={composerInputRef}
                   value={draft}
                   onChange={(e) => handleDraftChange(e.target.value)}
                   onKeyDown={handleKeyDown}
                   maxLength={1000}
                   rows={1}
                   placeholder={`Message ${headerTitle}...`}
-                  className="w-full min-h-[44px] max-h-32 px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-white/[0.08] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                  className="w-full min-h-[44px] max-h-32 px-4 py-2.5 rounded-3xl bg-slate-100 dark:bg-[#0B0E14] border border-transparent focus:border-[#2B84F6]/40 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6] resize-none"
                 />
                 {draft.length >= 750 && (
-                  <span className="absolute right-3 bottom-2 text-[11px] font-mono tabular-nums text-slate-400">
+                  <span className="absolute right-3.5 bottom-2 text-[11px] font-mono tabular-nums text-slate-400">
                     {draft.length}/1000
                   </span>
                 )}
@@ -1236,7 +1545,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 onClick={handleSend}
                 disabled={sending || (draft.trim().length === 0 && !stagedAttachment)}
                 aria-label="Send message"
-                className="min-h-[44px] min-w-[44px] px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white flex items-center justify-center transition-colors shrink-0"
+                className="min-h-[44px] min-w-[44px] rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-40 disabled:cursor-not-allowed text-white flex items-center justify-center transition-colors shrink-0"
               >
                 <Send className="w-4 h-4" />
               </button>
@@ -1245,9 +1554,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       </div>
 
+      {/* Members & Requests Drawer */}
       {membersOpen && (
         <aside className="fixed inset-0 z-30 lg:static lg:z-auto lg:w-76 bg-white dark:bg-[#111622] lg:border-l border-slate-200 dark:border-white/[0.08] flex flex-col shrink-0">
-          <div className="h-14 px-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between">
+          <div className="h-15 px-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between">
             <h2 className="text-sm font-semibold tabular-nums">
               Members ({members.length})
             </h2>
@@ -1255,7 +1565,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               type="button"
               onClick={() => setMembersOpen(false)}
               aria-label="Close member list"
-              className="min-h-[44px] min-w-[44px] -mr-2 rounded-xl flex items-center justify-center text-slate-500 hover:text-slate-900 dark:hover:text-white"
+              className="min-h-[44px] min-w-[44px] -mr-2 rounded-full flex items-center justify-center text-slate-500 hover:text-slate-900 dark:hover:text-white"
             >
               <X className="w-5 h-5" />
             </button>
@@ -1278,7 +1588,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     {joinRequests.map((req) => (
                       <li
                         key={req.userId}
-                        className="p-2.5 rounded-xl border border-amber-500/30 bg-amber-500/5 space-y-2"
+                        className="p-2.5 rounded-2xl border border-amber-500/30 bg-amber-500/5 space-y-2"
                       >
                         <button
                           type="button"
@@ -1298,7 +1608,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             type="button"
                             onClick={() => handleApproveRequest(req)}
                             disabled={processingReqId === req.userId}
-                            className="min-h-[36px] px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center justify-center gap-1"
+                            className="min-h-[36px] px-2.5 py-1 rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center justify-center gap-1"
                           >
                             <Check className="w-3.5 h-3.5" />
                             <span>Approve</span>
@@ -1307,7 +1617,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             type="button"
                             onClick={() => handleDeclineRequest(req)}
                             disabled={processingReqId === req.userId}
-                            className="min-h-[36px] px-2.5 py-1 rounded-lg border border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.06] text-xs font-medium inline-flex items-center justify-center gap-1"
+                            className="min-h-[36px] px-2.5 py-1 rounded-full border border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.06] text-xs font-medium inline-flex items-center justify-center gap-1"
                           >
                             <X className="w-3.5 h-3.5" />
                             <span>Decline</span>
@@ -1328,7 +1638,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 return (
                   <li
                     key={member.id}
-                    className="p-2.5 rounded-xl border border-slate-200/80 dark:border-white/[0.06] bg-slate-50/70 dark:bg-[#0B0E14]/50 space-y-2"
+                    className="p-2.5 rounded-2xl border border-slate-200/80 dark:border-white/[0.06] bg-slate-50/70 dark:bg-[#0B0E14]/50 space-y-2"
                   >
                     <button
                       type="button"
@@ -1350,9 +1660,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             </span>
                           )}
                           {chatMeta?.createdBy === member.id && chat.type === 'group' && (
-                            <span className="ml-1.5 text-xs text-indigo-500 dark:text-indigo-400">
-                              · Admin
-                            </span>
+                            <span className="ml-1.5 text-xs text-[#2B84F6]">· Admin</span>
                           )}
                         </p>
                         {isBlocked && (
@@ -1368,7 +1676,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             type="button"
                             onClick={() => handleStartDm(member.id)}
                             disabled={startingDmId === member.id || currentUser.banned}
-                            className="flex-1 min-h-[34px] px-2.5 py-1 rounded-lg bg-slate-200/70 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.1] text-xs font-medium inline-flex items-center justify-center gap-1 transition-colors"
+                            className="flex-1 min-h-[34px] px-2.5 py-1 rounded-full bg-slate-200/70 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.1] text-xs font-medium inline-flex items-center justify-center gap-1 transition-colors"
                           >
                             <MessageSquarePlus className="w-3.5 h-3.5" />
                             <span>{startingDmId === member.id ? 'Opening...' : 'DM'}</span>
@@ -1382,7 +1690,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                               label: member.username,
                             })
                           }
-                          className="min-h-[34px] px-2.5 py-1 rounded-lg border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.06] text-xs font-medium inline-flex items-center justify-center gap-1 transition-colors"
+                          className="min-h-[34px] px-2.5 py-1 rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.06] text-xs font-medium inline-flex items-center justify-center gap-1 transition-colors"
                         >
                           <Flag className="w-3.5 h-3.5" />
                           <span>Report</span>
@@ -1397,7 +1705,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                 color: member.color,
                               })
                             }
-                            className="min-h-[34px] px-2.5 py-1 rounded-lg border border-red-500/30 hover:bg-red-500/10 text-xs font-medium text-red-600 dark:text-red-400 inline-flex items-center justify-center gap-1 transition-colors"
+                            className="min-h-[34px] px-2.5 py-1 rounded-full border border-red-500/30 hover:bg-red-500/10 text-xs font-medium text-red-600 dark:text-red-400 inline-flex items-center justify-center gap-1 transition-colors"
                           >
                             <ShieldBan className="w-3.5 h-3.5" />
                             <span>Block</span>
@@ -1413,6 +1721,184 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </aside>
       )}
 
+      {/* Interactive Message Action Sheet (matching reference right screen) */}
+      {actionMessage && (
+        <div
+          className="fixed inset-0 z-50 bg-black/30 dark:bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-4"
+          onClick={() => {
+            setActionMessage(null);
+            setShowMoreEmojis(false);
+          }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Message actions"
+        >
+          <div
+            className="w-full max-w-sm rounded-3xl bg-white dark:bg-[#161C2C] border border-slate-200/80 dark:border-white/[0.1] shadow-2xl overflow-hidden message-enter"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Message Preview Card */}
+            <div className="p-4 pb-2">
+              <div className="p-3.5 rounded-2xl bg-slate-100/90 dark:bg-[#0B0E14] text-sm text-slate-800 dark:text-slate-200">
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1">
+                  {actionMessage.senderUsername}
+                </p>
+                <p className="line-clamp-3 leading-relaxed">
+                  {buildMessageSnippet(actionMessage)}
+                </p>
+              </div>
+            </div>
+
+            {/* Emoji React Strip */}
+            <div className="px-4 py-3 space-y-2.5 border-b border-slate-100 dark:border-white/[0.08]">
+              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">React</p>
+              <div className="flex items-center justify-between gap-1">
+                {PRIMARY_REACTIONS.map((emoji) => {
+                  const selected =
+                    reactionsByMessage.get(actionMessage.id)?.myEmoji === emoji;
+                  return (
+                    <button
+                      key={emoji}
+                      type="button"
+                      disabled={currentUser.banned}
+                      onClick={() => handleReact(actionMessage, emoji)}
+                      className={`h-9 w-9 rounded-full text-lg flex items-center justify-center transition-transform hover:scale-110 active:scale-95 ${
+                        selected ? 'bg-[#2B84F6]/15 ring-2 ring-[#2B84F6]' : 'hover:bg-slate-100 dark:hover:bg-white/[0.08]'
+                      }`}
+                    >
+                      {emoji}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => setShowMoreEmojis((prev) => !prev)}
+                  aria-label="More reactions"
+                  className="h-9 w-9 rounded-full bg-slate-100 dark:bg-white/[0.08] hover:bg-slate-200 dark:hover:bg-white/[0.14] text-slate-600 dark:text-slate-200 flex items-center justify-center transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              </div>
+
+              {showMoreEmojis && (
+                <div className="flex flex-wrap items-center gap-1 pt-1">
+                  {EXTRA_REACTIONS.map((emoji) => {
+                    const selected =
+                      reactionsByMessage.get(actionMessage.id)?.myEmoji === emoji;
+                    return (
+                      <button
+                        key={emoji}
+                        type="button"
+                        disabled={currentUser.banned}
+                        onClick={() => handleReact(actionMessage, emoji)}
+                        className={`h-9 w-9 rounded-full text-lg flex items-center justify-center transition-transform hover:scale-110 ${
+                          selected ? 'bg-[#2B84F6]/15 ring-2 ring-[#2B84F6]' : 'hover:bg-slate-100 dark:hover:bg-white/[0.08]'
+                        }`}
+                      >
+                        {emoji}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Action Menu Rows */}
+            <div className="divide-y divide-slate-100 dark:divide-white/[0.07]">
+              <button
+                type="button"
+                onClick={() => handleCopyMessage(actionMessage)}
+                className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+              >
+                <span>Copy</span>
+                <Copy className="w-4 h-4 text-slate-500" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleReplyMessage(actionMessage)}
+                className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+              >
+                <span>Reply</span>
+                <CornerUpLeft className="w-4 h-4 text-slate-500" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const target = actionMessage;
+                  setActionMessage(null);
+                  setForwardingMessage(target);
+                }}
+                className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+              >
+                <span>Forward</span>
+                <CornerUpRight className="w-4 h-4 text-slate-500" />
+              </button>
+
+              {actionMessage.senderId === currentUser.id ? (
+                <button
+                  type="button"
+                  onClick={() => handleDeleteMessage(actionMessage)}
+                  className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-500/[0.06] transition-colors"
+                >
+                  <span>Delete</span>
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = actionMessage;
+                      setActionMessage(null);
+                      onRequestReport({
+                        userId: target.senderId,
+                        label: target.senderUsername,
+                        messageId: target.id,
+                      });
+                    }}
+                    className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+                  >
+                    <span>Report message</span>
+                    <Flag className="w-4 h-4 text-slate-500" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = actionMessage;
+                      setActionMessage(null);
+                      onRequestBlock({
+                        userId: target.senderId,
+                        username: target.senderUsername,
+                        color: target.senderColor,
+                      });
+                    }}
+                    className="w-full min-h-[48px] px-5 py-3 flex items-center justify-between text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-500/[0.06] transition-colors"
+                  >
+                    <span>Block {actionMessage.senderUsername}</span>
+                    <ShieldBan className="w-4 h-4" />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Forward Message Modal */}
+      <ForwardModal
+        message={forwardingMessage}
+        chats={allChats}
+        currentUser={currentUser}
+        onClose={() => setForwardingMessage(null)}
+        onForwarded={(targetChatId, label) => {
+          onToast(`Forwarded to ${label}.`);
+          onSelectChat?.(targetChatId);
+        }}
+      />
+
+      {/* Image Lightbox */}
       {lightbox && (
         <div
           className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex flex-col items-center justify-center p-4"
@@ -1432,7 +1918,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 <a
                   href={lightbox.url}
                   download={lightbox.fileName}
-                  className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
+                  className="min-h-[40px] px-3.5 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
                 >
                   <Download className="w-4 h-4" />
                   <span>Download</span>
@@ -1442,7 +1928,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 onClick={closeLightbox}
                 aria-label="Close image"
-                className="min-h-[40px] min-w-[40px] rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
+                className="min-h-[40px] min-w-[40px] rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1453,7 +1939,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             src={lightbox.url}
             alt={lightbox.fileName}
             onClick={(e) => e.stopPropagation()}
-            className="max-h-[80vh] max-w-full rounded-xl object-contain select-none"
+            className="max-h-[80vh] max-w-full rounded-2xl object-contain select-none"
           />
         </div>
       )}

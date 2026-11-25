@@ -125,7 +125,7 @@
     },
     "ChatMessage": {
       "title": "ChatMessage",
-      "description": "Immutable chat message (max 1000 chars, optional attachment up to 5 MB, 24-hour retention).",
+      "description": "Chat message (max 1000 chars, optional attachment up to 5 MB, optional reply quote, 24-hour retention; sender can delete own messages).",
       "type": "object",
       "properties": {
         "senderId": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -133,10 +133,35 @@
         "senderColor": { "type": "string", "minLength": 7, "maxLength": 7 },
         "body": { "type": "string", "maxLength": 1000 },
         "attachment": { "type": "object" },
+        "replyTo": { "type": "object" },
+        "forwarded": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "expiresAt": { "type": "string", "format": "date-time" }
       },
       "required": ["senderId", "senderUsername", "senderColor", "body", "createdAt"]
+    },
+    "MessageReaction": {
+      "title": "MessageReaction",
+      "description": "Per-user emoji reaction to a specific chat message.",
+      "type": "object",
+      "properties": {
+        "messageId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "username": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "emoji": { "type": "string", "minLength": 1, "maxLength": 16 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["messageId", "userId", "username", "emoji", "updatedAt"]
+    },
+    "ChatReadReceipt": {
+      "title": "ChatReadReceipt",
+      "description": "Per-member read timestamp inside a chat for real-time read indicators.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "lastReadAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "lastReadAt"]
     },
     "MessageView": {
       "title": "MessageView",
@@ -206,13 +231,21 @@
       "schema": { "$ref": "#/entities/TypingState" },
       "description": "Ephemeral typing indicator state per member inside a chat."
     },
+    "/chats/{chatId}/reactions/{reactionId}": {
+      "schema": { "$ref": "#/entities/MessageReaction" },
+      "description": "Real-time emoji reactions per user and message."
+    },
+    "/chats/{chatId}/readReceipts/{userId}": {
+      "schema": { "$ref": "#/entities/ChatReadReceipt" },
+      "description": "Real-time read receipt timestamps per chat member."
+    },
     "/chats/{chatId}/joinRequests/{requesterId}": {
       "schema": { "$ref": "#/entities/JoinRequest" },
       "description": "Pending/approved/declined requests to join a private group."
     },
     "/chats/{chatId}/messages/{messageId}": {
       "schema": { "$ref": "#/entities/ChatMessage" },
-      "description": "Immutable messages inside a chat (24-hour auto-expiration)."
+      "description": "Messages inside a chat (24-hour auto-expiration; sender can delete own messages)."
     },
     "/chats/{chatId}/messages/{messageId}/views/{viewerId}": {
       "schema": { "$ref": "#/entities/MessageView" },

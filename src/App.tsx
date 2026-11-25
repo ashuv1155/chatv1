@@ -25,6 +25,7 @@ import {
   createGroup,
   ensureUserProfile,
   fetchBlocks,
+  fetchUnreadCountForChat,
   joinGroup,
   leaveGroup,
   markChatRead,
@@ -99,6 +100,7 @@ export default function App() {
   const [loadingChats, setLoadingChats] = useState(false);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [blocks, setBlocks] = useState<BlockEntry[]>([]);
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
 
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [notificationToast, setNotificationToast] = useState<AppNotification | null>(null);
@@ -174,6 +176,7 @@ export default function App() {
   const lastMsgTimestampByChatRef = useRef<Map<string, string>>(new Map());
   const notifiedKeysRef = useRef<Set<string>>(new Set());
   const seenJoinReqKeysRef = useRef<Set<string>>(new Set());
+  const lastCountedKeyRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
@@ -311,6 +314,13 @@ export default function App() {
       setMyChatLinks((prev) =>
         prev.map((c) => (c.id === chatId ? { ...c, lastReadAt: nowIso } : c)),
       );
+      setUnreadCounts((prev) => {
+        if (!(chatId in prev)) return prev;
+        const next = { ...prev };
+        delete next[chatId];
+        return next;
+      });
+      lastCountedKeyRef.current.delete(chatId);
       setNotifications((prev) =>
         prev.map((n) => (n.chatId === chatId && !n.read ? { ...n, read: true } : n)),
       );
@@ -336,6 +346,7 @@ export default function App() {
         setMyChatLinks([]);
         setGroupMetaMap({});
         setBlocks([]);
+        setUnreadCounts({});
         setNotifications([]);
         setNotificationToast(null);
         setActiveChatId(null);
@@ -346,6 +357,7 @@ export default function App() {
         lastMsgTimestampByChatRef.current.clear();
         notifiedKeysRef.current.clear();
         seenJoinReqKeysRef.current.clear();
+        lastCountedKeyRef.current.clear();
         return;
       }
 
@@ -559,6 +571,46 @@ export default function App() {
     return set;
   }, [chats, profile, blockedUserIds, activeChatId, screen, tabHidden]);
 
+  // Fetch accurate unread counts for chats with unread messages
+  useEffect(() => {
+    if (!profile) return;
+    let cancelled = false;
+
+    setUnreadCounts((prev) => {
+      let changed = false;
+      const next: Record<string, number> = {};
+      for (const [id, count] of Object.entries(prev)) {
+        if (unreadChatIds.has(id)) {
+          next[id] = count;
+        } else {
+          changed = true;
+          lastCountedKeyRef.current.delete(id);
+        }
+      }
+      return changed ? next : prev;
+    });
+
+    for (const chatId of unreadChatIds) {
+      const chat = chats.find((c) => c.id === chatId);
+      if (!chat) continue;
+      const key = `${chatId}:${chat.lastMessageAt ?? ''}:${chat.lastReadAt ?? ''}`;
+      if (lastCountedKeyRef.current.get(chatId) === key) continue;
+      lastCountedKeyRef.current.set(chatId, key);
+
+      void fetchUnreadCountForChat(chatId, chat.lastReadAt).then((count) => {
+        if (cancelled) return;
+        setUnreadCounts((prev) => ({
+          ...prev,
+          [chatId]: Math.max(1, count),
+        }));
+      });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [profile, unreadChatIds, chats]);
+
   // Reflect unread badge in browser tab title
   useEffect(() => {
     const unreadNotifs = notifications.filter((n) => !n.read).length;
@@ -750,12 +802,13 @@ export default function App() {
           <div
             className={`${
               activeChat ? 'hidden lg:block' : 'block'
-            } w-full lg:w-84 h-full shrink-0`}
+            } w-full lg:w-92 h-full shrink-0`}
           >
             <Sidebar
               profile={profile}
               chats={chats}
               unreadChatIds={unreadChatIds}
+              unreadCounts={unreadCounts}
               notifications={notifications}
               blockedUserIds={blockedUserIds}
               activeChatId={activeChatId}
@@ -783,10 +836,12 @@ export default function App() {
             {activeChat ? (
               <ChatView
                 chat={activeChat}
+                allChats={chats}
                 currentUser={profile}
                 blockedUserIds={blockedUserIds}
                 typingEnabled={notificationSettings.typingIndicators}
                 onChatViewed={handleChatViewed}
+                onSelectChat={(id) => setActiveChatId(id || null)}
                 onBackMobile={() => setActiveChatId(null)}
                 onLeaveGroup={handleLeaveGroup}
                 onStartDm={handleStartDm}
@@ -820,7 +875,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => openProfilePage(profile.id)}
-                        className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-sm font-medium inline-flex items-center gap-2 transition-colors whitespace-nowrap"
+                        className="min-h-[44px] px-4 py-2 rounded-full border border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-sm font-medium inline-flex items-center gap-2 transition-colors whitespace-nowrap"
                       >
                         <UserCircle2 className="w-4 h-4" />
                         <span>Your profile</span>
@@ -829,7 +884,7 @@ export default function App() {
                         type="button"
                         onClick={() => setCreateGroupOpen(true)}
                         disabled={profile.banned}
-                        className="min-h-[44px] px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold inline-flex items-center gap-2 transition-colors whitespace-nowrap"
+                        className="min-h-[44px] px-4 py-2 rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-50 text-white text-sm font-semibold inline-flex items-center gap-2 transition-colors whitespace-nowrap"
                       >
                         <Plus className="w-4 h-4" />
                         <span>Create group</span>
@@ -839,7 +894,7 @@ export default function App() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div className="p-4 rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] space-y-1.5">
-                      <Clock className="w-5 h-5 text-indigo-500" />
+                      <Clock className="w-5 h-5 text-[#2B84F6]" />
                       <h2 className="text-sm font-semibold">24-hour messages</h2>
                       <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                         Messages and attachments automatically clear after 24 hours.
@@ -871,14 +926,15 @@ export default function App() {
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                         {chats.slice(0, 4).map((c) => {
                           const hasUnread = unreadChatIds.has(c.id);
+                          const unreadCount = unreadCounts[c.id] ?? (hasUnread ? 1 : 0);
                           return (
                             <button
                               key={c.id}
                               type="button"
                               onClick={() => setActiveChatId(c.id)}
-                              className="p-3.5 rounded-xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] hover:border-indigo-500/40 flex items-center gap-3 text-left transition-colors"
+                              className="p-3.5 rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] hover:border-[#2B84F6]/45 flex items-center gap-3 text-left transition-colors"
                             >
-                              <MessageSquare className="w-4 h-4 text-indigo-500 shrink-0" />
+                              <MessageSquare className="w-4 h-4 text-[#2B84F6] shrink-0" />
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center justify-between gap-2">
                                   <p className="text-sm font-semibold truncate">
@@ -887,7 +943,9 @@ export default function App() {
                                       : c.name ?? 'Group'}
                                   </p>
                                   {hasUnread && (
-                                    <span className="w-2 h-2 rounded-full bg-indigo-500 shrink-0" />
+                                    <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-[#2B84F6] text-white text-[11px] font-bold leading-none flex items-center justify-center tabular-nums shrink-0">
+                                      {unreadCount > 99 ? '99+' : unreadCount}
+                                    </span>
                                   )}
                                 </div>
                                 <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
@@ -907,7 +965,7 @@ export default function App() {
                     </div>
                   ) : (
                     <p className="text-sm text-slate-500 dark:text-slate-400">
-                      Use Discover on the left to search anonymous users or join groups.
+                      Use + New Chat on the left to search anonymous users or join groups.
                     </p>
                   )}
                 </div>
@@ -942,7 +1000,7 @@ export default function App() {
           role="status"
           className="fixed top-4 right-4 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-2xl bg-white dark:bg-[#161C2C] text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-white/[0.12] shadow-xl p-3 flex items-start gap-3 message-enter"
         >
-          <div className="h-9 w-9 rounded-xl bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+          <div className="h-9 w-9 rounded-full bg-[#2B84F6]/15 text-[#2B84F6] flex items-center justify-center shrink-0">
             <Bell className="w-4 h-4" />
           </div>
           <button
