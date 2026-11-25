@@ -1,14 +1,25 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Buddy Chat — Anonymous Real-Time Chat</title>
-    <meta name="description" content="Anonymous real-time group and direct messaging with random handles and zero personal profile exposure." />
+    <meta name="description" content="Anonymous real-time group and direct messaging with random handles, 24-hour disappearing messages, and zero personal profile exposure." />
     <meta property="og:title" content="Buddy Chat — Anonymous Real-Time Chat" />
-    <meta property="og:description" content="Anonymous real-time group and direct messaging with random handles and zero personal profile exposure." />
+    <meta property="og:description" content="Anonymous real-time group and direct messaging with random handles, 24-hour disappearing messages, and zero personal profile exposure." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem('buddychat_theme') || 'system';
+          var systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var useDark = pref === 'dark' || (pref === 'system' && systemDark);
+          document.documentElement.classList.toggle('dark', useDark);
+          document.documentElement.style.colorScheme = useDark ? 'dark' : 'light';
+        } catch (e) {}
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

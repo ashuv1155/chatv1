@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { Globe, Lock, X } from 'lucide-react';
+import type { GroupVisibility } from '../types';
 
 interface CreateGroupModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreate: (name: string, description: string) => Promise<void>;
+  onCreate: (name: string, description: string, visibility: GroupVisibility) => Promise<void>;
 }
 
 export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
@@ -14,6 +15,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
 }) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [visibility, setVisibility] = useState<GroupVisibility>('public');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,9 +41,10 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
 
     setSubmitting(true);
     try {
-      await onCreate(trimmed, description.trim());
+      await onCreate(trimmed, description.trim(), visibility);
       setName('');
       setDescription('');
+      setVisibility('public');
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create group.');
@@ -64,7 +67,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
       >
         <div className="flex items-center justify-between">
           <h2 id="create-group-title" className="text-lg font-semibold tracking-tight">
-            Create public group
+            Create group
           </h2>
           <button
             type="button"
@@ -78,6 +81,47 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
+            <span className="block text-sm font-medium">Privacy</span>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setVisibility('public')}
+                className={`p-3 rounded-xl border text-left transition-colors ${
+                  visibility === 'public'
+                    ? 'border-indigo-500 bg-indigo-500/10 text-slate-900 dark:text-white'
+                    : 'border-slate-200 dark:border-white/[0.1] hover:bg-slate-50 dark:hover:bg-white/[0.04] text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <Globe className="w-4 h-4 text-indigo-500 shrink-0" />
+                  <span>Public</span>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-snug">
+                  Anyone can find and join immediately.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setVisibility('private')}
+                className={`p-3 rounded-xl border text-left transition-colors ${
+                  visibility === 'private'
+                    ? 'border-indigo-500 bg-indigo-500/10 text-slate-900 dark:text-white'
+                    : 'border-slate-200 dark:border-white/[0.1] hover:bg-slate-50 dark:hover:bg-white/[0.04] text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <Lock className="w-4 h-4 text-amber-500 shrink-0" />
+                  <span>Private</span>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-snug">
+                  Requires your approval to join.
+                </p>
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
             <label htmlFor="group-name" className="block text-sm font-medium">
               Group name
             </label>
@@ -89,7 +133,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
               maxLength={60}
               placeholder="Late Night Thoughts"
               autoFocus
-              className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0B0E14] border border-slate-200 dark:border-white/[0.1] text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0B0E14] border border-slate-200 dark:border-white/[0.1] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
           </div>
 
@@ -104,7 +148,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
               maxLength={200}
               rows={3}
               placeholder="What is this room about?"
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0B0E14] border border-slate-200 dark:border-white/[0.1] text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0B0E14] border border-slate-200 dark:border-white/[0.1] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
             />
           </div>
 
@@ -125,9 +169,9 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
             <button
               type="submit"
               disabled={submitting || name.trim().length < 2}
-              className="min-h-[44px] px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors"
+              className="min-h-[44px] px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors whitespace-nowrap"
             >
-              {submitting ? 'Creating...' : 'Create group'}
+              {submitting ? 'Creating...' : visibility === 'private' ? 'Create private group' : 'Create public group'}
             </button>
           </div>
         </form>

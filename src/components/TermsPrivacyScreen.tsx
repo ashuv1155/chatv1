@@ -36,38 +36,38 @@ export const TermsPrivacyScreen: React.FC<TermsPrivacyScreenProps> = ({ onBack }
         <section className="space-y-3">
           <h2 className="text-lg font-semibold">1. Eligibility (18+ Only)</h2>
           <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
-            You must be at least 18 years old to create an account or participate in any public group or direct message on Buddy Chat. By signing in, you confirm that you meet this age requirement.
+            You must be at least 18 years old to create an account or participate in any group or direct message on Buddy Chat. By signing in, you confirm that you meet this age requirement.
           </p>
         </section>
 
         <section className="space-y-3">
           <h2 className="text-lg font-semibold">2. Anonymity & What We Do Not Store</h2>
           <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
-            Buddy Chat uses Google Sign-In via Firebase Authentication solely to prevent automated spam and enforce bans. Our backend extracts only your opaque Firebase user ID (<code className="font-mono text-xs px-1 py-0.5 rounded bg-slate-200 dark:bg-white/[0.06]">sub</code>) to generate your random handle (such as <span className="font-medium">SilentFox4821</span>) and color.
+            Buddy Chat uses Google Sign-In via Firebase Authentication solely to prevent automated spam and enforce bans. Our system reads only your opaque user identifier to assign your random handle (such as <span className="font-medium">SilentFox4821</span>) and color.
           </p>
           <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
-            We never store, log, or display your real name, email address, or Google profile photo in our database, server logs, or user interface.
-          </p>
-        </section>
-
-        <section className="space-y-3">
-          <h2 className="text-lg font-semibold">3. Message Retention (7-Day Auto-Delete)</h2>
-          <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
-            Messages cannot be edited or deleted individually after sending. To keep conversations ephemeral, an automated database job deletes all messages older than 7 days every night.
+            We never store, log, or display your real name, email address, or Google profile photo in our database or user interface. Any bio or custom avatar you choose to upload is completely optional. If you rotate your random username (allowed once every 24 hours), previous handles are shown on your profile history for room transparency.
           </p>
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-lg font-semibold">4. Acceptable Use & Safety</h2>
+          <h2 className="text-lg font-semibold">3. Message Retention (24-Hour Auto-Delete)</h2>
           <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
-            Do not post illegal content, harassment, hate speech, threats, doxxing, or spam. Messages are limited to 1,000 characters and 5 messages per 10 seconds. Members can block users or submit reports at any time; accounts that violate these rules may be banned from sending or joining rooms.
+            Messages cannot be edited or deleted manually after sending. To keep conversations ephemeral, messages and attachments automatically expire after 24 hours. View-once photos permanently lock for each recipient immediately after they open them once.
           </p>
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-lg font-semibold">5. No Tracking Signals</h2>
+          <h2 className="text-lg font-semibold">4. Media, Files & Private Groups</h2>
           <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
-            Buddy Chat intentionally omits typing indicators, online presence status, and read receipts. Only members of a chat room can read or send messages in that room.
+            Members may share photos, view-once photos, and files up to 5 MB per attachment and up to 5 messages per 10 seconds. Private groups require approval from the group creator before new members can enter or read messages.
+          </p>
+        </section>
+
+        <section className="space-y-3">
+          <h2 className="text-lg font-semibold">5. Acceptable Use & No Tracking Signals</h2>
+          <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
+            Do not post illegal content, harassment, hate speech, threats, doxxing, or spam. Members can block users or submit reports at any time. Buddy Chat intentionally omits typing indicators, online presence status, and read receipts.
           </p>
         </section>
       </main>

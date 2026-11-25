@@ -2,12 +2,15 @@
   "entities": {
     "Profile": {
       "title": "Profile",
-      "description": "Anonymous user profile identified only by Firebase Auth UID (no email, name, or photo).",
+      "description": "Anonymous user profile with avatar, bio, and username change history (no email, name, or Google photo).",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "username": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[A-Za-z0-9]+$" },
         "color": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "bio": { "type": "string", "maxLength": 240 },
+        "avatarUrl": { "type": "string", "maxLength": 220000 },
+        "usernameHistory": { "type": "array" },
         "banned": { "type": "boolean" },
         "lastUsernameChangeAt": { "type": "string", "format": "date-time" },
         "createdAt": { "type": "string", "format": "date-time" }
@@ -21,6 +24,7 @@
       "properties": {
         "chatId": { "type": "string", "minLength": 1, "maxLength": 128 },
         "type": { "type": "string", "enum": ["dm", "group"] },
+        "visibility": { "type": "string", "enum": ["public", "private"] },
         "name": { "type": "string", "maxLength": 60 },
         "description": { "type": "string", "maxLength": 200 },
         "partnerId": { "type": "string", "maxLength": 128 },
@@ -45,7 +49,7 @@
     },
     "RateLimitState": {
       "title": "RateLimitState",
-      "description": "Per-user 10-second sliding/fixed rate limit state (max 5 messages per 10s).",
+      "description": "Per-user 10-second rate limit state (max 5 messages per 10s).",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -57,10 +61,11 @@
     },
     "Chat": {
       "title": "Chat",
-      "description": "A public group room or a private 1:1 direct message room.",
+      "description": "A public/private group room or a private 1:1 direct message room.",
       "type": "object",
       "properties": {
         "type": { "type": "string", "enum": ["dm", "group"] },
+        "visibility": { "type": "string", "enum": ["public", "private"] },
         "name": { "type": "string", "maxLength": 60 },
         "description": { "type": "string", "maxLength": 200 },
         "dmKey": { "type": "string", "maxLength": 260 },
@@ -82,18 +87,58 @@
       },
       "required": ["userId", "username", "color", "joinedAt"]
     },
+    "JoinRequest": {
+      "title": "JoinRequest",
+      "description": "Request from a user to join a private group, pending admin approval.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "username": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "color": { "type": "string", "minLength": 7, "maxLength": 7 },
+        "status": { "type": "string", "enum": ["pending", "approved", "declined"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "username", "color", "status", "createdAt", "updatedAt"]
+    },
     "ChatMessage": {
       "title": "ChatMessage",
-      "description": "Immutable chat message (max 1000 characters, 7-day retention).",
+      "description": "Immutable chat message (max 1000 chars, optional attachment up to 5 MB, 24-hour retention).",
       "type": "object",
       "properties": {
         "senderId": { "type": "string", "minLength": 1, "maxLength": 128 },
         "senderUsername": { "type": "string", "minLength": 3, "maxLength": 32 },
         "senderColor": { "type": "string", "minLength": 7, "maxLength": 7 },
-        "body": { "type": "string", "minLength": 1, "maxLength": 1000 },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "body": { "type": "string", "maxLength": 1000 },
+        "attachment": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" }
       },
       "required": ["senderId", "senderUsername", "senderColor", "body", "createdAt"]
+    },
+    "MessageView": {
+      "title": "MessageView",
+      "description": "Per-user view-once consumption marker.",
+      "type": "object",
+      "properties": {
+        "viewerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "viewedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["viewerId", "viewedAt"]
+    },
+    "AttachmentChunk": {
+      "title": "AttachmentChunk",
+      "description": "Chunked base64 payload for shared photos, view-once photos, and files (5 MB max total).",
+      "type": "object",
+      "properties": {
+        "messageId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "index": { "type": "integer" },
+        "isViewOnce": { "type": "boolean" },
+        "data": { "type": "string", "maxLength": 900000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["messageId", "senderId", "index", "isViewOnce", "data", "createdAt"]
     },
     "Report": {
       "title": "Report",
@@ -129,15 +174,27 @@
     },
     "/chats/{chatId}": {
       "schema": { "$ref": "#/entities/Chat" },
-      "description": "Group and direct-message room metadata."
+      "description": "Public/private group and direct-message room metadata."
     },
     "/chats/{chatId}/members/{memberId}": {
       "schema": { "$ref": "#/entities/ChatMember" },
       "description": "Subcollection of members belonging to a chat."
     },
+    "/chats/{chatId}/joinRequests/{requesterId}": {
+      "schema": { "$ref": "#/entities/JoinRequest" },
+      "description": "Pending/approved/declined requests to join a private group."
+    },
     "/chats/{chatId}/messages/{messageId}": {
       "schema": { "$ref": "#/entities/ChatMessage" },
-      "description": "Immutable messages inside a chat."
+      "description": "Immutable messages inside a chat (24-hour auto-expiration)."
+    },
+    "/chats/{chatId}/messages/{messageId}/views/{viewerId}": {
+      "schema": { "$ref": "#/entities/MessageView" },
+      "description": "Tracks one-time photo view consumption per user."
+    },
+    "/chats/{chatId}/attachments/{attachmentId}/chunks/{chunkIndex}": {
+      "schema": { "$ref": "#/entities/AttachmentChunk" },
+      "description": "Chunked media/file data (up to 5 MB total per message)."
     },
     "/reports/{reportId}": {
       "schema": { "$ref": "#/entities/Report" },

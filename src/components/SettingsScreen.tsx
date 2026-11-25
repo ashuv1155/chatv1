@@ -1,15 +1,26 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowLeft, LogOut, Moon, RefreshCw, ShieldAlert, Sun, UserX } from 'lucide-react';
+import {
+  ArrowLeft,
+  Laptop,
+  LogOut,
+  Moon,
+  RefreshCw,
+  ShieldAlert,
+  Sun,
+  UserCircle2,
+  UserX,
+} from 'lucide-react';
 import { Avatar } from './Avatar';
-import type { BlockEntry, Profile } from '../types';
+import type { BlockEntry, Profile, ThemePreference } from '../types';
 
 interface SettingsScreenProps {
   profile: Profile;
   blocks: BlockEntry[];
-  isDark: boolean;
-  onToggleTheme: () => void;
+  themePreference: ThemePreference;
+  onChangeTheme: (pref: ThemePreference) => void;
   onRotateUsername: () => Promise<void>;
   onUnblock: (blockedId: string) => Promise<void>;
+  onOpenProfile: () => void;
   onOpenTerms: () => void;
   onSignOut: () => Promise<void>;
   onBack: () => void;
@@ -34,10 +45,11 @@ function getCooldownText(lastChangedAt: string | null): string | null {
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   profile,
   blocks,
-  isDark,
-  onToggleTheme,
+  themePreference,
+  onChangeTheme,
   onRotateUsername,
   onUnblock,
+  onOpenProfile,
   onOpenTerms,
   onSignOut,
   onBack,
@@ -93,7 +105,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           <button
             type="button"
             onClick={onBack}
-            className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white min-h-[44px] px-2 -ml-2 rounded-lg transition-colors"
+            className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white min-h-[44px] px-2 -ml-2 rounded-lg transition-colors whitespace-nowrap"
           >
             <ArrowLeft className="w-4 h-4" />
             <span>Back to chats</span>
@@ -103,16 +115,31 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         </div>
       </header>
 
-      <main className="max-w-2xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+      <main className="max-w-2xl mx-auto px-4 sm:px-6 py-8 space-y-6">
         <section className="rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 space-y-5">
-          <div className="flex items-center gap-4">
-            <Avatar username={profile.username} color={profile.color} size="lg" />
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                Your anonymous handle
-              </p>
-              <h1 className="text-xl font-bold tracking-tight truncate">{profile.username}</h1>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4 min-w-0">
+              <Avatar
+                username={profile.username}
+                color={profile.color}
+                avatarUrl={profile.avatarUrl}
+                size="lg"
+              />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                  Your anonymous handle
+                </p>
+                <h1 className="text-xl font-bold tracking-tight truncate">{profile.username}</h1>
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={onOpenProfile}
+              className="min-h-[40px] px-3.5 py-1.5 rounded-xl border border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+            >
+              <UserCircle2 className="w-4 h-4" />
+              <span>Edit profile</span>
+            </button>
           </div>
 
           {profile.banned && (
@@ -154,30 +181,47 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </div>
         </section>
 
-        <section className="rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 space-y-4">
+        <section className="rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 space-y-5">
           <h2 className="text-sm font-semibold">Appearance & Legal</h2>
-          <div className="flex items-center justify-between gap-4 py-1">
+
+          <div className="space-y-2.5">
             <div>
-              <p className="text-sm font-medium">Color theme</p>
+              <p className="text-sm font-medium">Theme</p>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                {isDark ? 'Dark mode active' : 'Light mode active'}
+                Follows your device theme by default
               </p>
             </div>
-            <button
-              type="button"
-              onClick={onToggleTheme}
-              className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-sm font-medium inline-flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
-            >
-              {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-              <span>{isDark ? 'Light mode' : 'Dark mode'}</span>
-            </button>
+            <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-[#0B0E14]">
+              {([
+                { key: 'system', label: 'Device', Icon: Laptop },
+                { key: 'light', label: 'Light', Icon: Sun },
+                { key: 'dark', label: 'Dark', Icon: Moon },
+              ] as const).map(({ key, label, Icon }) => {
+                const active = themePreference === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => onChangeTheme(key)}
+                    className={`min-h-[40px] px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
+                      active
+                        ? 'bg-white dark:bg-[#161C2C] text-slate-900 dark:text-white shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5" />
+                    <span>{label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          <div className="pt-3 border-t border-slate-200 dark:border-white/[0.08] flex items-center justify-between">
+          <div className="pt-4 border-t border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium">Terms and Privacy Policy</p>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                7-day message retention and anonymity commitments
+                24-hour message auto-delete and anonymity commitments
               </p>
             </div>
             <button

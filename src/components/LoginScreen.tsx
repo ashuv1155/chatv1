@@ -1,5 +1,13 @@
 import React, { useState } from 'react';
-import { Lock, MessageSquare, ShieldCheck, AlertTriangle } from 'lucide-react';
+import {
+  AlertTriangle,
+  Clock,
+  EyeOff,
+  Image,
+  Lock,
+  ShieldCheck,
+  Users,
+} from 'lucide-react';
 import { getMissingEnvVars, isFirebaseConfigured } from '../lib/env';
 
 interface LoginScreenProps {
@@ -32,7 +40,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-slate-100 flex flex-col">
-      <header className="w-full max-w-6xl mx-auto px-6 py-5 flex items-center justify-between">
+      <header className="w-full max-w-6xl mx-auto px-6 py-5 flex items-center justify-between gap-8">
         <span className="text-lg font-bold tracking-tight whitespace-nowrap shrink-0">
           Buddy Chat
         </span>
@@ -45,53 +53,70 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         </button>
       </header>
 
-      <main className="flex-1 flex items-center justify-center px-4 py-8">
-        <div className="w-full max-w-4xl grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
-          <section className="lg:col-span-6 space-y-6">
-            <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-balance leading-tight">
-              Speak freely with a random handle.
-            </h1>
-            <p className="text-base text-slate-600 dark:text-slate-400 leading-relaxed max-w-md">
-              Join public groups or start private one-to-one conversations without exposing your real identity.
-            </p>
+      <main className="flex-1 flex items-center justify-center px-4 sm:px-6 py-8">
+        <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
+          <section className="lg:col-span-7 space-y-8">
+            <div className="space-y-4">
+              <p className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 tracking-wide">
+                Anonymous real-time rooms & direct messaging
+              </p>
+              <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-balance leading-[1.12]">
+                Chat freely with a random handle. Leave no trail after 24 hours.
+              </h1>
+              <p className="text-base text-slate-600 dark:text-slate-400 leading-relaxed max-w-xl">
+                Connect one-to-one or inside public and private groups without revealing your name, email, or Google photo.
+              </p>
+            </div>
 
-            <div className="space-y-4 pt-2 border-t border-slate-200 dark:border-white/[0.08]">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 pt-4 border-t border-slate-200 dark:border-white/[0.08]">
               <div className="flex items-start gap-3">
                 <ShieldCheck className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
                 <div>
-                  <h2 className="text-sm font-semibold">Zero personal profile data</h2>
-                  <p className="text-sm text-slate-600 dark:text-slate-400">
-                    Your Google name, email, and photo are never stored, logged, or shown to other members.
+                  <h2 className="text-sm font-semibold">Anonymous profiles</h2>
+                  <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
+                    Random handle, optional bio & custom avatar, and transparent username change history.
                   </p>
                 </div>
               </div>
+
               <div className="flex items-start gap-3">
-                <MessageSquare className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
+                <Clock className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
                 <div>
-                  <h2 className="text-sm font-semibold">Public groups & direct messages</h2>
-                  <p className="text-sm text-slate-600 dark:text-slate-400">
-                    Create rooms on any topic, discover existing groups, or message anyone directly.
+                  <h2 className="text-sm font-semibold">24-hour auto-delete</h2>
+                  <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
+                    Every message and shared file expires automatically after 24 hours.
                   </p>
                 </div>
               </div>
+
               <div className="flex items-start gap-3">
-                <Lock className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
+                <Image className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
                 <div>
-                  <h2 className="text-sm font-semibold">7-day message window</h2>
-                  <p className="text-sm text-slate-600 dark:text-slate-400">
-                    Messages are immutable and scoped to the most recent 7 days of conversation.
+                  <h2 className="text-sm font-semibold">Photos, view-once & files</h2>
+                  <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
+                    Share photos, single-view disappearing photos, and files up to 5 MB.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3">
+                <Users className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
+                <div>
+                  <h2 className="text-sm font-semibold">Public & private groups</h2>
+                  <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
+                    Open public rooms or private invite-requested rooms approved by the group admin.
                   </p>
                 </div>
               </div>
             </div>
           </section>
 
-          <section className="lg:col-span-6">
+          <section className="lg:col-span-5">
             <div className="rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 sm:p-8 space-y-6">
               <div className="space-y-1.5">
                 <h2 className="text-xl font-semibold tracking-tight">Sign in to Buddy Chat</h2>
                 <p className="text-sm text-slate-600 dark:text-slate-400">
-                  Google sign-in verifies you are human and assigns a random anonymous handle.
+                  Sign in once with Google to keep your anonymous session saved on this device.
                 </p>
               </div>
 
@@ -146,7 +171,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 type="button"
                 onClick={handleContinue}
                 disabled={isSigningIn || !isFirebaseConfigured}
-                className="w-full min-h-[48px] px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm transition-colors flex items-center justify-center gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                className="w-full min-h-[48px] px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm transition-colors flex items-center justify-center gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 whitespace-nowrap"
               >
                 <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
                   <path
@@ -157,9 +182,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 <span>{isSigningIn ? 'Signing in...' : 'Continue with Google'}</span>
               </button>
 
-              <p className="text-xs text-slate-500 dark:text-slate-400 text-center">
-                No typing indicators · No read receipts · No online status
-              </p>
+              <div className="pt-1 flex items-center justify-center gap-3 text-xs text-slate-500 dark:text-slate-400">
+                <span className="inline-flex items-center gap-1">
+                  <EyeOff className="w-3.5 h-3.5" />
+                  No read receipts
+                </span>
+                <span aria-hidden="true">·</span>
+                <span className="inline-flex items-center gap-1">
+                  <Lock className="w-3.5 h-3.5" />
+                  Zero PII stored
+                </span>
+              </div>
             </div>
           </section>
         </div>

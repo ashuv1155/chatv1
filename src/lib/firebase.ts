@@ -3,8 +3,10 @@ import {
   Auth,
   GoogleAuthProvider,
   User,
+  browserLocalPersistence,
   getAuth,
   onAuthStateChanged,
+  setPersistence,
   signInWithPopup,
   signOut,
 } from 'firebase/auth';
@@ -41,6 +43,7 @@ let firebaseApp: FirebaseApp | null = null;
 let firebaseAuth: Auth | null = null;
 let firestoreDb: Firestore | null = null;
 let connectionTested = false;
+let persistenceApplied = false;
 
 function ensureInitialized(): { app: FirebaseApp; auth: Auth; db: Firestore } {
   if (!isFirebaseConfigured) {
@@ -61,6 +64,12 @@ function ensureInitialized(): { app: FirebaseApp; auth: Auth; db: Firestore } {
 
   if (!firebaseAuth) {
     firebaseAuth = getAuth(firebaseApp);
+    if (!persistenceApplied) {
+      persistenceApplied = true;
+      void setPersistence(firebaseAuth, browserLocalPersistence).catch(() => {
+        // Fallback silently if browser blocks IndexedDB/localStorage in private browsing
+      });
+    }
   }
 
   if (!firestoreDb) {
@@ -124,6 +133,12 @@ export async function signInWithGoogle(): Promise<User> {
   const auth = getFirebaseAuth();
   if (!auth) {
     throw new Error('Firebase configuration is missing.');
+  }
+
+  try {
+    await setPersistence(auth, browserLocalPersistence);
+  } catch {
+    // Continue even if storage persistence is restricted by private window settings
   }
 
   const provider = new GoogleAuthProvider();
