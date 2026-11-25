@@ -1,16 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Archive,
   Bell,
+  BellOff,
   CheckCheck,
   Clock,
   Hash,
   Home,
   Lock,
+  MailOpen,
   MessageSquarePlus,
   MoreHorizontal,
+  Pin,
   Plus,
   Search,
   Settings,
+  Star,
   Trash2,
   User,
   UserPlus,
@@ -38,6 +43,7 @@ interface SidebarProps {
   profile: Profile;
   chats: ChatSummary[];
   nicknames: Record<string, string>;
+  favoriteUserIds: Set<string>;
   unreadChatIds: Set<string>;
   unreadCounts: Record<string, number>;
   notifications: AppNotification[];
@@ -50,6 +56,18 @@ interface SidebarProps {
   onClearNotifications: () => void;
   onJoinGroup: (chatId: string) => Promise<void>;
   onStartDm: (targetUserId: string) => Promise<void>;
+  onToggleFavoriteUser: (target: { userId: string; username: string; color?: string }) => Promise<void>;
+  onUpdateChatPrefs: (
+    chatId: string,
+    prefs: {
+      isFavorite?: boolean;
+      pinned?: boolean;
+      muted?: boolean;
+      archived?: boolean;
+      markedUnread?: boolean;
+    },
+  ) => Promise<void>;
+  onRemoveChat: (chat: ChatSummary) => Promise<void>;
   onOpenCreateGroup: () => void;
   onOpenProfile: (userId: string) => void;
   onOpenSettings: () => void;
@@ -73,6 +91,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   profile,
   chats,
   nicknames,
+  favoriteUserIds,
   unreadChatIds,
   unreadCounts,
   notifications,
@@ -85,6 +104,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onClearNotifications,
   onJoinGroup,
   onStartDm,
+  onToggleFavoriteUser,
+  onUpdateChatPrefs,
+  onRemoveChat,
   onOpenCreateGroup,
   onOpenProfile,
   onOpenSettings,
@@ -93,12 +115,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [tab, setTab] = useState<'chats' | 'browse'>('chats');
   const [notifOpen, setNotifOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [rowMenuChatId, setRowMenuChatId] = useState<string | null>(null);
   const [searchBarOpen, setSearchBarOpen] = useState(false);
   const notifPanelRef = useRef<HTMLDivElement | null>(null);
   const filterMenuRef = useRef<HTMLDivElement | null>(null);
+  const rowMenuRef = useRef<HTMLDivElement | null>(null);
 
   const [myChatsQuery, setMyChatsQuery] = useState('');
-  const [chatKindFilter, setChatKindFilter] = useState<'all' | 'groups' | 'dms'>('all');
+  const [chatKindFilter, setChatKindFilter] = useState<
+    'all' | 'favorites' | 'unread' | 'dms' | 'groups' | 'archived'
+  >('all');
   const [browseFilter, setBrowseFilter] = useState<'all' | 'people' | 'groups'>('all');
   const [query, setQuery] = useState('');
   const [groups, setGroups] = useState<GroupSearchResult[]>([]);
@@ -127,7 +153,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, [profile.id, blockedUserIds]);
 
   useEffect(() => {
-    if (!notifOpen && !filterOpen) return;
+    if (!notifOpen && !filterOpen && !rowMenuChatId) return;
     const handleOutside = (e: MouseEvent) => {
       if (notifOpen && notifPanelRef.current && !notifPanelRef.current.contains(e.target as Node)) {
         setNotifOpen(false);
@@ -135,11 +161,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (filterOpen && filterMenuRef.current && !filterMenuRef.current.contains(e.target as Node)) {
         setFilterOpen(false);
       }
+      if (rowMenuChatId && rowMenuRef.current && !rowMenuRef.current.contains(e.target as Node)) {
+        setRowMenuChatId(null);
+      }
     };
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setNotifOpen(false);
         setFilterOpen(false);
+        setRowMenuChatId(null);
       }
     };
     document.addEventListener('mousedown', handleOutside);
@@ -148,7 +178,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       document.removeEventListener('mousedown', handleOutside);
       document.removeEventListener('keydown', handleEsc);
     };
-  }, [notifOpen, filterOpen]);
+  }, [notifOpen, filterOpen, rowMenuChatId]);
 
   const memberChatIds = useMemo(() => new Set(chats.map((c) => c.id)), [chats]);
 
@@ -162,29 +192,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return map;
   }, [chats]);
 
-  // Combine DM partners first, then discovered quick contacts without duplicates
+  // Combine favorite buddies first, then DM partners, then discovered quick contacts without duplicates
   const storyStripUsers = useMemo(() => {
     const seen = new Set<string>();
-    const list: Profile[] = [];
+    const favList: Profile[] = [];
+    const regularList: Profile[] = [];
+
+    const pushCandidate = (p: Profile) => {
+      if (seen.has(p.id) || blockedUserIds.has(p.id)) return;
+      seen.add(p.id);
+      if (favoriteUserIds.has(p.id)) {
+        favList.push(p);
+      } else {
+        regularList.push(p);
+      }
+    };
 
     for (const chat of chats) {
-      if (chat.type === 'dm' && chat.partner && !blockedUserIds.has(chat.partner.id)) {
-        if (!seen.has(chat.partner.id)) {
-          seen.add(chat.partner.id);
-          list.push(chat.partner);
-        }
+      if (chat.type === 'dm' && chat.partner) {
+        pushCandidate(chat.partner);
       }
     }
 
     for (const contact of quickContacts) {
-      if (!seen.has(contact.id) && !blockedUserIds.has(contact.id)) {
-        seen.add(contact.id);
-        list.push(contact);
-      }
+      pushCandidate(contact);
     }
 
-    return list.slice(0, 12);
-  }, [chats, quickContacts, blockedUserIds]);
+    return [...favList, ...regularList].slice(0, 14);
+  }, [chats, quickContacts, blockedUserIds, favoriteUserIds]);
 
   useEffect(() => {
     if (tab !== 'browse') return;
@@ -293,9 +328,40 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
+  const activeChatCount = useMemo(
+    () => chats.filter((c) => !c.archived).length,
+    [chats],
+  );
+  const archivedChatCount = useMemo(
+    () => chats.filter((c) => c.archived).length,
+    [chats],
+  );
+  const favoriteChatCount = useMemo(
+    () =>
+      chats.filter(
+        (c) =>
+          !c.archived &&
+          (Boolean(c.isFavorite) || Boolean(c.partner && favoriteUserIds.has(c.partner.id))),
+      ).length,
+    [chats, favoriteUserIds],
+  );
+
   const filteredChats = useMemo(() => {
     const q = myChatsQuery.trim().toLowerCase();
     return chats.filter((chat) => {
+      if (chatKindFilter === 'archived') {
+        if (!chat.archived) return false;
+      } else if (chat.archived) {
+        return false;
+      }
+
+      if (chatKindFilter === 'favorites') {
+        const isFav =
+          Boolean(chat.isFavorite) ||
+          Boolean(chat.partner && favoriteUserIds.has(chat.partner.id));
+        if (!isFav) return false;
+      }
+      if (chatKindFilter === 'unread' && !unreadChatIds.has(chat.id)) return false;
       if (chatKindFilter === 'groups' && chat.type !== 'group') return false;
       if (chatKindFilter === 'dms' && chat.type !== 'dm') return false;
       if (!q) return true;
@@ -312,7 +378,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       }
       return (chat.name ?? 'Group').toLowerCase().includes(q);
     });
-  }, [chats, chatKindFilter, myChatsQuery, nicknames]);
+  }, [chats, chatKindFilter, myChatsQuery, nicknames, favoriteUserIds, unreadChatIds]);
 
   const showPeopleSection = browseFilter !== 'groups';
   const showGroupsSection = browseFilter !== 'people';
@@ -542,6 +608,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   const customNick = nicknames[person.id]?.trim();
                   const shortLabel = customNick || person.username.replace(/\d+$/, '');
                   const fullLabel = getDisplayName(person.id, person.username, nicknames);
+                  const isFav = favoriteUserIds.has(person.id);
                   return (
                     <button
                       key={person.id}
@@ -551,13 +618,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       title={`Chat with ${fullLabel}`}
                       className="flex flex-col items-center gap-1.5 shrink-0 group disabled:opacity-50"
                     >
-                      <span className="rounded-full p-0.5 ring-2 ring-transparent group-hover:ring-[#2B84F6]/60 transition-all">
+                      <span className="relative rounded-full p-0.5 ring-2 ring-transparent group-hover:ring-[#2B84F6]/60 transition-all">
                         <Avatar
                           username={person.username}
                           color={person.color}
                           avatarUrl={person.avatarUrl}
                           size="lg"
                         />
+                        {isFav && (
+                          <span
+                            title="Favorite buddy"
+                            className="absolute -bottom-0.5 -right-0.5 h-4 w-4 rounded-full bg-amber-500 text-white ring-2 ring-white dark:ring-[#121212] flex items-center justify-center"
+                          >
+                            <Star className="w-2.5 h-2.5 fill-current" />
+                          </span>
+                        )}
                       </span>
                       <span className="text-[11px] font-medium text-slate-600 dark:text-neutral-300 max-w-[58px] truncate">
                         {shortLabel}
@@ -570,17 +645,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
             {/* Section Header: Chats + Overflow/Filter */}
             <div className="px-4 sm:px-5 pb-2 flex items-center justify-between gap-2 relative" ref={filterMenuRef}>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 min-w-0">
                 <h2 className="text-base font-bold tracking-tight text-slate-900 dark:text-white">
-                  Chats
+                  {chatKindFilter === 'archived'
+                    ? 'Archived'
+                    : chatKindFilter === 'favorites'
+                      ? 'Favorites'
+                      : 'Chats'}
                 </h2>
                 {chatKindFilter !== 'all' && (
                   <button
                     type="button"
                     onClick={() => setChatKindFilter('all')}
-                    className="text-xs font-medium text-[#2B84F6] hover:underline"
+                    className="text-xs font-medium text-[#2B84F6] hover:underline truncate"
                   >
-                    {chatKindFilter === 'dms' ? 'DMs only' : 'Groups only'} · Clear
+                    {chatKindFilter === 'dms'
+                      ? 'DMs only'
+                      : chatKindFilter === 'groups'
+                        ? 'Groups only'
+                        : chatKindFilter === 'unread'
+                          ? 'Unread'
+                          : chatKindFilter === 'favorites'
+                            ? 'Starred'
+                            : 'Archived'}{' '}
+                    · Clear
                   </button>
                 )}
               </div>
@@ -609,11 +697,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
 
               {filterOpen && (
-                <div className="absolute right-4 top-9 z-30 w-44 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/[0.1] shadow-xl p-1.5 space-y-0.5">
+                <div className="absolute right-4 top-9 z-30 w-48 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/[0.1] shadow-xl p-1.5 space-y-0.5">
                   {([
-                    { key: 'all', label: `All chats (${chats.length})` },
+                    { key: 'all', label: `All active (${activeChatCount})` },
+                    { key: 'favorites', label: `Favorites (${favoriteChatCount})` },
+                    { key: 'unread', label: `Unread (${unreadChatIds.size})` },
                     { key: 'dms', label: 'Direct chats' },
                     { key: 'groups', label: 'Groups only' },
+                    { key: 'archived', label: `Archived (${archivedChatCount})` },
                   ] as const).map((opt) => (
                     <button
                       key={opt.key}
@@ -691,88 +782,217 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         : 'Public group · 24h';
 
                   const timeLabel = formatShortTime(chat.lastMessageAt);
+                  const isFav =
+                    Boolean(chat.isFavorite) ||
+                    Boolean(chat.partner && favoriteUserIds.has(chat.partner.id));
+                  const isRowMenuOpen = rowMenuChatId === chat.id;
 
                   return (
-                    <li key={chat.id}>
-                      <button
-                        type="button"
-                        onClick={() => onSelectChat(chat.id)}
-                        className={`w-full min-h-[68px] px-3 py-2.5 rounded-2xl flex items-center gap-3 text-left transition-colors ${
+                    <li key={chat.id} className="relative group/row">
+                      <div
+                        className={`w-full min-h-[68px] px-3 py-2.5 rounded-2xl flex items-center gap-3 transition-colors ${
                           isActive
                             ? 'bg-[#2B84F6]/10 dark:bg-[#2B84F6]/15 text-slate-900 dark:text-white'
                             : 'hover:bg-slate-50 dark:hover:bg-white/[0.04] text-slate-800 dark:text-neutral-200'
                         }`}
                       >
-                        {isDm ? (
-                          <Avatar
-                            username={chat.partner?.username ?? 'DM'}
-                            color={chat.partner?.color ?? '#2B84F6'}
-                            avatarUrl={chat.partner?.avatarUrl}
-                            size="md"
-                          />
-                        ) : (
-                          <div
-                            className={`h-11 w-11 shrink-0 rounded-full flex items-center justify-center ${
-                              isPrivate
-                                ? 'bg-amber-500/12 text-amber-600 dark:text-amber-400'
-                                : 'bg-slate-100 dark:bg-[#242426] text-slate-600 dark:text-neutral-300'
-                            }`}
-                          >
-                            {isPrivate ? (
-                              <Lock className="w-4 h-4" />
-                            ) : (
-                              <Hash className="w-4 h-4" />
-                            )}
-                          </div>
-                        )}
-
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <p
-                              className={`text-[15px] truncate ${
-                                isUnread ? 'font-bold text-slate-900 dark:text-white' : 'font-semibold'
+                        <button
+                          type="button"
+                          onClick={() => onSelectChat(chat.id)}
+                          className="flex items-center gap-3 min-w-0 flex-1 text-left"
+                        >
+                          {isDm ? (
+                            <Avatar
+                              username={chat.partner?.username ?? 'DM'}
+                              color={chat.partner?.color ?? '#2B84F6'}
+                              avatarUrl={chat.partner?.avatarUrl}
+                              size="md"
+                            />
+                          ) : (
+                            <div
+                              className={`h-11 w-11 shrink-0 rounded-full flex items-center justify-center ${
+                                isPrivate
+                                  ? 'bg-amber-500/12 text-amber-600 dark:text-amber-400'
+                                  : 'bg-slate-100 dark:bg-[#242426] text-slate-600 dark:text-neutral-300'
                               }`}
                             >
-                              {title}
-                            </p>
-                            {timeLabel && (
-                              <span
-                                className={`text-xs tabular-nums shrink-0 ${
+                              {isPrivate ? (
+                                <Lock className="w-4 h-4" />
+                              ) : (
+                                <Hash className="w-4 h-4" />
+                              )}
+                            </div>
+                          )}
+
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <p
+                                  className={`text-[15px] truncate ${
+                                    isUnread ? 'font-bold text-slate-900 dark:text-white' : 'font-semibold'
+                                  }`}
+                                >
+                                  {title}
+                                </p>
+                                {chat.pinned && (
+                                  <Pin className="w-3 h-3 text-[#2B84F6] shrink-0" aria-label="Pinned" />
+                                )}
+                                {isFav && (
+                                  <Star className="w-3 h-3 text-amber-500 fill-current shrink-0" aria-label="Favorite" />
+                                )}
+                                {chat.muted && (
+                                  <BellOff className="w-3 h-3 text-slate-400 dark:text-neutral-500 shrink-0" aria-label="Muted" />
+                                )}
+                              </div>
+                              {timeLabel && (
+                                <span
+                                  className={`text-xs tabular-nums shrink-0 ${
+                                    isUnread
+                                      ? 'font-semibold text-[#2B84F6]'
+                                      : 'text-slate-400 dark:text-neutral-500'
+                                  }`}
+                                >
+                                  {timeLabel}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex items-center justify-between gap-2 mt-0.5">
+                              <p
+                                className={`text-xs truncate flex items-center gap-1 min-w-0 ${
                                   isUnread
-                                    ? 'font-semibold text-[#2B84F6]'
-                                    : 'text-slate-400 dark:text-neutral-500'
+                                    ? 'font-medium text-slate-800 dark:text-neutral-200'
+                                    : 'text-slate-500 dark:text-neutral-400'
                                 }`}
                               >
-                                {timeLabel}
-                              </span>
-                            )}
-                          </div>
+                                {sentByMe && chat.lastMessagePreview && (
+                                  <CheckCheck className="w-3.5 h-3.5 text-[#2B84F6] shrink-0" />
+                                )}
+                                <span className="truncate">{previewText}</span>
+                              </p>
 
-                          <div className="flex items-center justify-between gap-2 mt-0.5">
-                            <p
-                              className={`text-xs truncate flex items-center gap-1 min-w-0 ${
-                                isUnread
-                                  ? 'font-medium text-slate-800 dark:text-neutral-200'
-                                  : 'text-slate-500 dark:text-neutral-400'
-                              }`}
-                            >
-                              {sentByMe && chat.lastMessagePreview && (
-                                <CheckCheck className="w-3.5 h-3.5 text-[#2B84F6] shrink-0" />
+                              {isUnread && (
+                                <span
+                                  aria-label={`${unreadCount} unread messages`}
+                                  className="min-w-[20px] h-5 px-1.5 rounded-full bg-[#2B84F6] text-white text-[11px] font-bold leading-none flex items-center justify-center tabular-nums shrink-0"
+                                >
+                                  {unreadCount > 99 ? '99+' : unreadCount}
+                                </span>
                               )}
-                              <span className="truncate">{previewText}</span>
-                            </p>
-
-                            {isUnread && (
-                              <span
-                                aria-label={`${unreadCount} unread messages`}
-                                className="min-w-[20px] h-5 px-1.5 rounded-full bg-[#2B84F6] text-white text-[11px] font-bold leading-none flex items-center justify-center tabular-nums shrink-0"
-                              >
-                                {unreadCount > 99 ? '99+' : unreadCount}
-                              </span>
-                            )}
+                            </div>
                           </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRowMenuChatId((prev) => (prev === chat.id ? null : chat.id));
+                          }}
+                          aria-label={`Options for ${title}`}
+                          aria-expanded={isRowMenuOpen}
+                          className={`min-h-[34px] min-w-[34px] rounded-full flex items-center justify-center text-slate-400 dark:text-neutral-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/70 dark:hover:bg-white/[0.08] transition-all shrink-0 ${
+                            isRowMenuOpen
+                              ? 'opacity-100 bg-slate-200/70 dark:bg-white/[0.08]'
+                              : 'opacity-100 sm:opacity-0 sm:group-hover/row:opacity-100'
+                          }`}
+                        >
+                          <MoreHorizontal className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {isRowMenuOpen && (
+                        <div
+                          ref={rowMenuRef}
+                          className="absolute right-3 top-14 z-30 w-52 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/[0.1] shadow-xl p-1.5 space-y-0.5 message-enter"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRowMenuChatId(null);
+                              void onUpdateChatPrefs(chat.id, { pinned: !chat.pinned });
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                          >
+                            <Pin className="w-3.5 h-3.5 text-[#2B84F6]" />
+                            <span>{chat.pinned ? 'Unpin chat' : 'Pin to top'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRowMenuChatId(null);
+                              if (isDm && chat.partner) {
+                                void onToggleFavoriteUser({
+                                  userId: chat.partner.id,
+                                  username: chat.partner.username,
+                                  color: chat.partner.color,
+                                });
+                              } else {
+                                void onUpdateChatPrefs(chat.id, { isFavorite: !chat.isFavorite });
+                              }
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                          >
+                            <Star
+                              className={`w-3.5 h-3.5 ${
+                                isFav ? 'text-amber-500 fill-current' : 'text-amber-500'
+                              }`}
+                            />
+                            <span>{isFav ? 'Remove favorite' : 'Add to favorites'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRowMenuChatId(null);
+                              void onUpdateChatPrefs(chat.id, { muted: !chat.muted });
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                          >
+                            <BellOff className="w-3.5 h-3.5 text-slate-500 dark:text-neutral-400" />
+                            <span>{chat.muted ? 'Unmute alerts' : 'Mute alerts'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRowMenuChatId(null);
+                              void onUpdateChatPrefs(chat.id, { markedUnread: !isUnread });
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                          >
+                            <MailOpen className="w-3.5 h-3.5 text-slate-500 dark:text-neutral-400" />
+                            <span>{isUnread ? 'Mark as read' : 'Mark as unread'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRowMenuChatId(null);
+                              void onUpdateChatPrefs(chat.id, { archived: !chat.archived });
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                          >
+                            <Archive className="w-3.5 h-3.5 text-slate-500 dark:text-neutral-400" />
+                            <span>{chat.archived ? 'Unarchive chat' : 'Archive chat'}</span>
+                          </button>
+
+                          <div className="my-1 border-t border-slate-100 dark:border-white/[0.08]" />
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRowMenuChatId(null);
+                              void onRemoveChat(chat);
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-red-600 dark:text-red-400 hover:bg-red-500/10"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>{chat.type === 'group' ? 'Leave group' : 'Remove chat'}</span>
+                          </button>
                         </div>
-                      </button>
+                      )}
                     </li>
                   );
                 })}
@@ -886,25 +1106,58 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 )}
                               </div>
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDm(person)}
-                              disabled={startingDmId === person.id || profile.banned}
-                              className={`min-h-[36px] px-3.5 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
-                                hasDm
-                                  ? 'bg-slate-200 dark:bg-white/[0.08] text-slate-800 dark:text-neutral-100 hover:bg-slate-300 dark:hover:bg-white/[0.14]'
-                                  : 'bg-[#2B84F6] hover:bg-[#1D74E8] text-white disabled:opacity-50'
-                              }`}
-                            >
-                              <MessageSquarePlus className="w-3.5 h-3.5" />
-                              <span>
-                                {startingDmId === person.id
-                                  ? 'Opening...'
-                                  : hasDm
-                                    ? 'Open'
-                                    : 'Chat'}
-                              </span>
-                            </button>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void onToggleFavoriteUser({
+                                    userId: person.id,
+                                    username: person.username,
+                                    color: person.color,
+                                  })
+                                }
+                                aria-label={
+                                  favoriteUserIds.has(person.id)
+                                    ? `Remove ${displayName} from favorites`
+                                    : `Add ${displayName} to favorites`
+                                }
+                                title={
+                                  favoriteUserIds.has(person.id)
+                                    ? 'Remove from favorites'
+                                    : 'Add to favorites'
+                                }
+                                className={`min-h-[36px] min-w-[36px] rounded-full border flex items-center justify-center transition-colors ${
+                                  favoriteUserIds.has(person.id)
+                                    ? 'border-amber-500/40 bg-amber-500/12 text-amber-500'
+                                    : 'border-slate-200 dark:border-white/[0.1] text-slate-400 hover:text-amber-500 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
+                                }`}
+                              >
+                                <Star
+                                  className={`w-3.5 h-3.5 ${
+                                    favoriteUserIds.has(person.id) ? 'fill-current' : ''
+                                  }`}
+                                />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDm(person)}
+                                disabled={startingDmId === person.id || profile.banned}
+                                className={`min-h-[36px] px-3.5 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+                                  hasDm
+                                    ? 'bg-slate-200 dark:bg-white/[0.08] text-slate-800 dark:text-neutral-100 hover:bg-slate-300 dark:hover:bg-white/[0.14]'
+                                    : 'bg-[#2B84F6] hover:bg-[#1D74E8] text-white disabled:opacity-50'
+                                }`}
+                              >
+                                <MessageSquarePlus className="w-3.5 h-3.5" />
+                                <span>
+                                  {startingDmId === person.id
+                                    ? 'Opening...'
+                                    : hasDm
+                                      ? 'Open'
+                                      : 'Chat'}
+                                </span>
+                              </button>
+                            </div>
                           </li>
                         );
                       })}

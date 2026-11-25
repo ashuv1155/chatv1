@@ -35,9 +35,27 @@
         "lastSenderId": { "type": "string", "maxLength": 128 },
         "lastSenderUsername": { "type": "string", "maxLength": 32 },
         "lastReadAt": { "type": "string", "format": "date-time" },
+        "isFavorite": { "type": "boolean" },
+        "pinned": { "type": "boolean" },
+        "muted": { "type": "boolean" },
+        "archived": { "type": "boolean" },
+        "markedUnread": { "type": "boolean" },
         "joinedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["chatId", "type", "joinedAt"]
+    },
+    "FavoriteRecord": {
+      "title": "FavoriteRecord",
+      "description": "User-scoped starred/favorite buddy record.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "targetUserId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "username": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "color": { "type": "string", "minLength": 7, "maxLength": 7 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "targetUserId", "username", "color", "createdAt"]
     },
     "BlockRecord": {
       "title": "BlockRecord",
@@ -230,6 +248,10 @@
     "/profiles/{userId}/nicknames/{targetUserId}": {
       "schema": { "$ref": "#/entities/FriendNickname" },
       "description": "Private nicknames set by userId for friends."
+    },
+    "/profiles/{userId}/favorites/{targetUserId}": {
+      "schema": { "$ref": "#/entities/FavoriteRecord" },
+      "description": "Favorite buddies starred by userId."
     },
     "/rateLimits/{userId}": {
       "schema": { "$ref": "#/entities/RateLimitState" },

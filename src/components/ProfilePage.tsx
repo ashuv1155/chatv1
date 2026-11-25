@@ -6,18 +6,25 @@ import {
   Flag,
   History,
   MessageSquarePlus,
+  Palette,
   Pencil,
   RefreshCw,
   Settings,
   ShieldAlert,
   ShieldBan,
+  Star,
   Tag,
   Trash2,
   UserCheck,
   X,
 } from 'lucide-react';
 import { Avatar } from './Avatar';
-import { fetchProfileById, resizeAvatarImage, updateOwnProfile } from '../lib/api';
+import {
+  PROFILE_ACCENT_COLORS,
+  fetchProfileById,
+  resizeAvatarImage,
+  updateOwnProfile,
+} from '../lib/api';
 import type { Profile } from '../types';
 
 interface ProfilePageProps {
@@ -25,6 +32,7 @@ interface ProfilePageProps {
   currentUser: Profile;
   nicknames: Record<string, string>;
   isBlocked: boolean;
+  isFavorite: boolean;
   onBack: () => void;
   onOpenSettings: () => void;
   onProfileUpdated: (updated: Profile) => void;
@@ -32,6 +40,7 @@ interface ProfilePageProps {
   onRotateUsername: () => Promise<void>;
   onSetNickname: (targetUserId: string, nickname: string) => Promise<void>;
   onRemoveNickname: (targetUserId: string) => Promise<void>;
+  onToggleFavorite: (target: { userId: string; username: string; color?: string }) => Promise<void>;
   onStartDm: (targetUserId: string) => Promise<void>;
   onRequestReport: (params: { userId: string; label: string }) => void;
   onRequestBlock: (target: { userId: string; username: string; color?: string }) => void;
@@ -62,6 +71,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   currentUser,
   nicknames,
   isBlocked,
+  isFavorite,
   onBack,
   onOpenSettings,
   onProfileUpdated,
@@ -69,6 +79,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   onRotateUsername,
   onSetNickname,
   onRemoveNickname,
+  onToggleFavorite,
   onStartDm,
   onRequestReport,
   onRequestBlock,
@@ -95,6 +106,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   const [rotating, setRotating] = useState(false);
   const [startingDm, setStartingDm] = useState(false);
   const [unblocking, setUnblocking] = useState(false);
+  const [togglingFavorite, setTogglingFavorite] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(
     null,
   );
@@ -327,6 +339,54 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     }
   };
 
+  const handleToggleFavorite = async () => {
+    if (!viewedProfile || isSelf || togglingFavorite) return;
+    setTogglingFavorite(true);
+    setFeedback(null);
+    try {
+      await onToggleFavorite({
+        userId: viewedProfile.id,
+        username: viewedProfile.username,
+        color: viewedProfile.color,
+      });
+      setFeedback({
+        type: 'success',
+        text: isFavorite
+          ? `Removed ${primaryTitle} from favorites.`
+          : `Added ${primaryTitle} to favorites.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Could not update favorite.',
+      });
+    } finally {
+      setTogglingFavorite(false);
+    }
+  };
+
+  const handleSelectColor = async (nextColor: string) => {
+    if (!isSelf || !viewedProfile || savingProfile || viewedProfile.color === nextColor) return;
+    setFeedback(null);
+    setSavingProfile(true);
+    try {
+      const saved = await updateOwnProfile(currentUser.id, {
+        bio: viewedProfile.bio,
+        avatarUrl: viewedProfile.avatarUrl,
+        color: nextColor,
+      });
+      onProfileUpdated({ ...currentUser, ...saved });
+      setFeedback({ type: 'success', text: 'Avatar accent color updated.' });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Could not update avatar color.',
+      });
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
   const primaryTitle = isSelf
     ? viewedProfile?.username ?? currentUser.username
     : activeNickname || viewedProfile?.username || 'User Profile';
@@ -466,6 +526,21 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
 
                     <button
                       type="button"
+                      onClick={handleToggleFavorite}
+                      disabled={togglingFavorite}
+                      aria-pressed={isFavorite}
+                      className={`min-h-[44px] px-3.5 py-2 rounded-full border text-sm font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                        isFavorite
+                          ? 'border-amber-500/40 bg-amber-500/12 text-amber-600 dark:text-amber-400'
+                          : 'border-slate-200 dark:border-white/[0.12] hover:bg-slate-100 dark:hover:bg-white/[0.06]'
+                      }`}
+                    >
+                      <Star className={`w-4 h-4 ${isFavorite ? 'fill-current' : ''}`} />
+                      <span>{isFavorite ? 'Favorited' : 'Favorite'}</span>
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={() =>
                         onRequestReport({
                           userId: viewedProfile.id,
@@ -517,6 +592,41 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Remove image</span>
                   </button>
+                </div>
+              )}
+
+              {isSelf && (
+                <div className="pt-4 border-t border-slate-200 dark:border-white/[0.1] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Palette className="w-4 h-4 text-[#2B84F6]" />
+                    <div>
+                      <p className="text-sm font-semibold">Avatar color</p>
+                      <p className="text-xs text-slate-500 dark:text-neutral-400">
+                        Choose your anonymous avatar badge color
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {PROFILE_ACCENT_COLORS.map((hex) => {
+                      const active = viewedProfile.color.toLowerCase() === hex.toLowerCase();
+                      return (
+                        <button
+                          key={hex}
+                          type="button"
+                          onClick={() => handleSelectColor(hex)}
+                          disabled={savingProfile || viewedProfile.banned}
+                          aria-label={`Select color ${hex}`}
+                          aria-pressed={active}
+                          style={{ backgroundColor: hex }}
+                          className={`h-7 w-7 rounded-full transition-transform hover:scale-110 disabled:opacity-50 ${
+                            active
+                              ? 'ring-2 ring-offset-2 ring-slate-900 dark:ring-white dark:ring-offset-[#141414] scale-110'
+                              : ''
+                          }`}
+                        />
+                      );
+                    })}
+                  </div>
                 </div>
               )}
 

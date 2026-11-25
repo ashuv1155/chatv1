@@ -1,24 +1,31 @@
 import React, { useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   Bell,
   Check,
   Laptop,
   LogOut,
   MessageSquareMore,
+  MessageSquarePlus,
   Moon,
   Pencil,
   RefreshCw,
   ShieldAlert,
+  Star,
   Sun,
+  Trash2,
   UserCircle2,
   UserX,
   Volume2,
+  X,
 } from 'lucide-react';
 import { Avatar } from './Avatar';
+import { getDisplayName } from '../lib/api';
 import type { BrowserNotifPermission } from '../lib/notifications';
 import type {
   BlockEntry,
+  FavoriteEntry,
   NotificationSettings,
   Profile,
   ThemePreference,
@@ -27,6 +34,8 @@ import type {
 interface SettingsScreenProps {
   profile: Profile;
   blocks: BlockEntry[];
+  favorites: FavoriteEntry[];
+  nicknames: Record<string, string>;
   themePreference: ThemePreference;
   notificationSettings: NotificationSettings;
   browserNotifPermission: BrowserNotifPermission;
@@ -36,15 +45,21 @@ interface SettingsScreenProps {
   onSetUsername: (nextUsername: string) => Promise<void>;
   onRotateUsername: () => Promise<void>;
   onUnblock: (blockedId: string) => Promise<void>;
+  onRemoveFavorite: (targetUserId: string) => Promise<void>;
+  onStartDm: (targetUserId: string) => Promise<void>;
+  onOpenProfileUser: (userId: string) => void;
   onOpenProfile: () => void;
   onOpenTerms: () => void;
   onSignOut: () => Promise<void>;
+  onDeleteAccount: () => Promise<void>;
   onBack: () => void;
 }
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   profile,
   blocks,
+  favorites,
+  nicknames,
   themePreference,
   notificationSettings,
   browserNotifPermission,
@@ -54,9 +69,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onSetUsername,
   onRotateUsername,
   onUnblock,
+  onRemoveFavorite,
+  onStartDm,
+  onOpenProfileUser,
   onOpenProfile,
   onOpenTerms,
   onSignOut,
+  onDeleteAccount,
   onBack,
 }) => {
   const [editingUsername, setEditingUsername] = useState(false);
@@ -64,7 +83,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [savingUsername, setSavingUsername] = useState(false);
   const [rotating, setRotating] = useState(false);
   const [unblockingId, setUnblockingId] = useState<string | null>(null);
+  const [removingFavId, setRemovingFavId] = useState<string | null>(null);
+  const [startingDmId, setStartingDmId] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [requestingPerm, setRequestingPerm] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
@@ -118,6 +143,41 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       await onSignOut();
     } finally {
       setSigningOut(false);
+    }
+  };
+
+  const handleRemoveFav = async (targetUserId: string) => {
+    setRemovingFavId(targetUserId);
+    try {
+      await onRemoveFavorite(targetUserId);
+    } finally {
+      setRemovingFavId(null);
+    }
+  };
+
+  const handleQuickDm = async (targetUserId: string) => {
+    setStartingDmId(targetUserId);
+    try {
+      await onStartDm(targetUserId);
+    } finally {
+      setStartingDmId(null);
+    }
+  };
+
+  const handleConfirmDeleteAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (deletingAccount || deleteConfirmText.trim().toUpperCase() !== 'DELETE') return;
+    setDeletingAccount(true);
+    setDeleteError(null);
+    try {
+      await onDeleteAccount();
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error
+          ? err.message
+          : 'Could not delete account. Please try again after re-signing in.',
+      );
+      setDeletingAccount(false);
     }
   };
 
@@ -448,6 +508,74 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
         <section className="rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.1] p-6 space-y-4">
           <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Star className="w-4 h-4 text-amber-500 fill-current" />
+              <h2 className="text-sm font-semibold">Favorite buddies</h2>
+            </div>
+            <span className="text-xs text-slate-500 dark:text-neutral-400 tabular-nums">
+              {favorites.length} starred
+            </span>
+          </div>
+
+          {favorites.length === 0 ? (
+            <p className="text-sm text-slate-500 dark:text-neutral-400">
+              No favorite buddies yet. Star a friend from their profile, chat header, or search.
+            </p>
+          ) : (
+            <ul className="divide-y divide-slate-200 dark:divide-white/[0.08]">
+              {favorites.map((fav) => {
+                const displayName = getDisplayName(fav.targetUserId, fav.username, nicknames);
+                const hasNick = Boolean(nicknames[fav.targetUserId]?.trim());
+                return (
+                  <li
+                    key={fav.targetUserId}
+                    className="py-3 flex items-center justify-between gap-3"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onOpenProfileUser(fav.targetUserId)}
+                      className="flex items-center gap-3 min-w-0 flex-1 text-left hover:opacity-80 transition-opacity"
+                    >
+                      <Avatar username={fav.username} color={fav.color} size="sm" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{displayName}</p>
+                        {hasNick && (
+                          <p className="text-xs text-slate-500 dark:text-neutral-400 truncate">
+                            @{fav.username}
+                          </p>
+                        )}
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleQuickDm(fav.targetUserId)}
+                        disabled={startingDmId === fav.targetUserId || profile.banned}
+                        className="min-h-[38px] px-3 py-1.5 rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                      >
+                        <MessageSquarePlus className="w-3.5 h-3.5" />
+                        <span>{startingDmId === fav.targetUserId ? 'Opening...' : 'Chat'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveFav(fav.targetUserId)}
+                        disabled={removingFavId === fav.targetUserId}
+                        aria-label={`Remove ${displayName} from favorites`}
+                        title="Remove from favorites"
+                        className="min-h-[38px] min-w-[38px] rounded-full border border-slate-200 dark:border-white/[0.12] hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 flex items-center justify-center transition-colors"
+                      >
+                        <Star className="w-3.5 h-3.5 text-amber-500 fill-current" />
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        <section className="rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.1] p-6 space-y-4">
+          <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold">Blocked users</h2>
             <span className="text-xs text-slate-500 dark:text-neutral-400 tabular-nums">
               {blocks.length} blocked
@@ -490,18 +618,133 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           )}
         </section>
 
-        <div className="pt-2">
-          <button
-            type="button"
-            onClick={handleSignOut}
-            disabled={signingOut}
-            className="w-full min-h-[48px] px-5 py-3 rounded-full border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:text-red-300 font-semibold text-sm inline-flex items-center justify-center gap-2 transition-colors"
-          >
-            <LogOut className="w-4 h-4" />
-            <span>{signingOut ? 'Signing out...' : 'Sign out'}</span>
-          </button>
-        </div>
+        <section className="rounded-2xl bg-white dark:bg-[#141414] border border-red-500/25 p-6 space-y-4">
+          <div className="space-y-1">
+            <h2 className="text-sm font-semibold text-red-600 dark:text-red-400">
+              Account actions
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-neutral-400 leading-relaxed">
+              Sign out on this device or permanently delete your anonymous profile, chat links,
+              favorites, nicknames, and login session.
+            </p>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button
+              type="button"
+              onClick={handleSignOut}
+              disabled={signingOut}
+              className="flex-1 min-h-[46px] px-5 py-2.5 rounded-full border border-slate-200 dark:border-white/[0.12] hover:bg-slate-100 dark:hover:bg-white/[0.06] font-semibold text-sm inline-flex items-center justify-center gap-2 transition-colors"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>{signingOut ? 'Signing out...' : 'Sign out'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setDeleteConfirmText('');
+                setDeleteError(null);
+                setDeleteModalOpen(true);
+              }}
+              className="flex-1 min-h-[46px] px-5 py-2.5 rounded-full border border-red-500/35 bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:text-red-300 font-semibold text-sm inline-flex items-center justify-center gap-2 transition-colors"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span>Delete account</span>
+            </button>
+          </div>
+        </section>
       </main>
+
+      {deleteModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50 dark:bg-black/75 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => {
+            if (!deletingAccount) setDeleteModalOpen(false);
+          }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-account-title"
+        >
+          <div
+            className="w-full max-w-md rounded-3xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.1] shadow-2xl p-6 space-y-4 message-enter"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="h-9 w-9 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 id="delete-account-title" className="text-base font-bold tracking-tight">
+                    Delete your account?
+                  </h2>
+                  <p className="text-xs text-slate-500 dark:text-neutral-400">
+                    This action cannot be undone.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={deletingAccount}
+                onClick={() => setDeleteModalOpen(false)}
+                aria-label="Close"
+                className="min-h-[36px] min-w-[36px] -mr-1 -mt-1 rounded-full flex items-center justify-center text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 dark:text-neutral-300 leading-relaxed">
+              Your anonymous profile (<span className="font-semibold">{profile.username}</span>),
+              group memberships, saved favorites, private nicknames, block list, and authentication
+              record will be permanently removed.
+            </p>
+
+            <form onSubmit={handleConfirmDeleteAccount} className="space-y-3">
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-slate-600 dark:text-neutral-300">
+                  Type <span className="font-mono font-bold">DELETE</span> to confirm
+                </span>
+                <input
+                  type="text"
+                  value={deleteConfirmText}
+                  onChange={(e) => setDeleteConfirmText(e.target.value)}
+                  placeholder="DELETE"
+                  autoFocus
+                  disabled={deletingAccount}
+                  className="w-full min-h-[42px] px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-black border border-slate-200 dark:border-white/[0.12] text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                />
+              </label>
+
+              {deleteError && (
+                <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+                  {deleteError}
+                </p>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={deletingAccount}
+                  onClick={() => setDeleteModalOpen(false)}
+                  className="min-h-[42px] px-4 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.1] hover:bg-slate-100 dark:hover:bg-white/[0.06] text-xs font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={deletingAccount || deleteConfirmText.trim().toUpperCase() !== 'DELETE'}
+                  className="min-h-[42px] px-4 py-1.5 rounded-full bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>{deletingAccount ? 'Deleting...' : 'Delete permanently'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

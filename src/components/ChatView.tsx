@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DocumentData, QueryDocumentSnapshot } from 'firebase/firestore';
 import {
+  Archive,
   ArrowLeft,
+  BellOff,
   Check,
   CheckCheck,
   ChevronUp,
@@ -11,20 +13,26 @@ import {
   Download,
   Eye,
   EyeOff,
+  FileDown,
   FileText,
   Flag,
   Hash,
   Image as ImageIcon,
   Lock,
   LogOut,
+  MailOpen,
   MessageSquarePlus,
   MoreHorizontal,
   Paperclip,
+  Pin,
   Plus,
+  Search,
   Send,
   ShieldBan,
+  Star,
   Tag,
   Trash2,
+  UserMinus,
   UserPlus,
   Users,
   X,
@@ -71,12 +79,26 @@ interface ChatViewProps {
   allChats: ChatSummary[];
   currentUser: Profile;
   nicknames: Record<string, string>;
+  favoriteUserIds: Set<string>;
   blockedUserIds: Set<string>;
   typingEnabled: boolean;
   onChatViewed?: (chatId: string) => void;
   onSelectChat?: (chatId: string) => void;
   onBackMobile: () => void;
   onLeaveGroup: (chatId: string) => Promise<void>;
+  onRemoveChat: (chat: ChatSummary) => Promise<void>;
+  onRemoveGroupMember?: (chatId: string, targetUserId: string) => Promise<void>;
+  onToggleFavoriteUser: (target: { userId: string; username: string; color?: string }) => Promise<void>;
+  onUpdateChatPrefs: (
+    chatId: string,
+    prefs: {
+      isFavorite?: boolean;
+      pinned?: boolean;
+      muted?: boolean;
+      archived?: boolean;
+      markedUnread?: boolean;
+    },
+  ) => Promise<void>;
   onStartDm: (targetUserId: string) => Promise<void>;
   onOpenProfile: (userId: string) => void;
   onSetNickname: (targetUserId: string, nickname: string) => Promise<void>;
@@ -136,12 +158,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
   allChats,
   currentUser,
   nicknames,
+  favoriteUserIds,
   blockedUserIds,
   typingEnabled,
   onChatViewed,
   onSelectChat,
   onBackMobile,
   onLeaveGroup,
+  onRemoveChat,
+  onRemoveGroupMember,
+  onToggleFavoriteUser,
+  onUpdateChatPrefs,
   onStartDm,
   onOpenProfile,
   onSetNickname,
@@ -165,6 +192,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const [members, setMembers] = useState<Profile[]>([]);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [chatMeta, setChatMeta] = useState<{
     createdBy: string | null;
     visibility: GroupVisibility;
@@ -216,6 +247,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const headerMenuRef = useRef<HTMLDivElement | null>(null);
   const recentSendTimesRef = useRef<number[]>([]);
   const isAtBottomRef = useRef(true);
   const hasScrolledInitialRef = useRef(false);
@@ -273,6 +305,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setReplyingTo(null);
     setActionMessage(null);
     setShowMoreEmojis(false);
+    setHeaderMenuOpen(false);
+    setSearchOpen(false);
+    setSearchQuery('');
     setPhotoUrls({});
     setPhotoLoading({});
     setPhotoErrors({});
@@ -404,18 +439,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   }, [typingEnabled, clearTypingIndicator]);
 
-  // Close action sheet with Escape
+  // Close action sheet & header menu on outside click / Escape
   useEffect(() => {
-    if (!actionMessage) return;
+    if (!actionMessage && !headerMenuOpen) return;
+    const onOutside = (e: MouseEvent) => {
+      if (headerMenuOpen && headerMenuRef.current && !headerMenuRef.current.contains(e.target as Node)) {
+        setHeaderMenuOpen(false);
+      }
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setActionMessage(null);
         setShowMoreEmojis(false);
+        setHeaderMenuOpen(false);
       }
     };
+    document.addEventListener('mousedown', onOutside);
     document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [actionMessage]);
+    return () => {
+      document.removeEventListener('mousedown', onOutside);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [actionMessage, headerMenuOpen]);
 
   const visibleMessages = useMemo(() => {
     const liveIds = new Set(liveMessages.map((m) => m.id));
@@ -425,6 +470,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
     ];
     return merged.filter((m) => !blockedUserIds.has(m.senderId));
   }, [olderMessages, liveMessages, blockedUserIds]);
+
+  const displayedMessages = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!searchOpen || !q) return visibleMessages;
+    return visibleMessages.filter((msg) => {
+      const senderName = getDisplayName(msg.senderId, msg.senderUsername, nicknames).toLowerCase();
+      const body = msg.body.toLowerCase();
+      const fileName = msg.attachment?.fileName.toLowerCase() ?? '';
+      return body.includes(q) || senderName.includes(q) || fileName.includes(q);
+    });
+  }, [visibleMessages, searchOpen, searchQuery, nicknames]);
 
   // Group reactions by messageId -> aggregated emoji counts + user's own reaction
   const reactionsByMessage = useMemo(() => {
@@ -859,6 +915,45 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
+  const handleExportTranscript = () => {
+    setHeaderMenuOpen(false);
+    const title = chat.type === 'dm' ? dmDisplayName : chat.name ?? 'Group';
+    const lines = visibleMessages.map((m) => {
+      const sender = getDisplayName(m.senderId, m.senderUsername, nicknames);
+      const time = new Date(m.createdAt).toLocaleString();
+      const text = buildMessageSnippet(m);
+      return `[${time}] ${sender}: ${text}`;
+    });
+    const content = `Buddy Chat Transcript — ${title}\nExported ${new Date().toLocaleString()}\n\n${
+      lines.length > 0 ? lines.join('\n') : '(No active messages)'
+    }\n`;
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${title.replace(/[^a-z0-9_-]+/gi, '_').toLowerCase() || 'chat'}_transcript.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+    onToast('Chat transcript exported.');
+  };
+
+  const handleKickMember = async (member: Profile) => {
+    if (!onRemoveGroupMember || removingMemberId) return;
+    setRemovingMemberId(member.id);
+    try {
+      await onRemoveGroupMember(chat.id, member.id);
+      setMembers((prev) => prev.filter((m) => m.id !== member.id));
+      const label = getDisplayName(member.id, member.username, nicknames);
+      onToast(`Removed ${label} from the group.`);
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Could not remove member.');
+    } finally {
+      setRemovingMemberId(null);
+    }
+  };
+
   const handleStartDm = async (targetUserId: string) => {
     setStartingDmId(targetUserId);
     try {
@@ -1016,60 +1111,77 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </button>
             )}
 
-            {chat.type === 'dm' && dmPartner && (
-              <button
-                type="button"
-                onClick={() =>
-                  openNicknameModal(dmPartner.id, dmPartner.username, dmPartner.color)
-                }
-                title={dmHasNickname ? 'Edit friend nickname' : 'Set friend nickname'}
-                aria-label={dmHasNickname ? 'Edit friend nickname' : 'Set friend nickname'}
-                className={`min-h-[38px] px-2.5 py-1.5 rounded-full border text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
-                  dmHasNickname
-                    ? 'border-[#2B84F6]/40 bg-[#2B84F6]/10 text-[#2B84F6]'
-                    : 'border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-700 dark:text-neutral-300'
-                }`}
-              >
-                <Tag className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">
-                  {dmHasNickname ? 'Nickname' : 'Nickname'}
-                </span>
-              </button>
-            )}
-
             <button
               type="button"
-              onClick={() =>
-                onRequestReport({
-                  userId: dmPartner?.id ?? null,
-                  label: headerTitle,
-                })
-              }
-              title="Report"
-              aria-label="Report"
-              className="min-h-[38px] px-2.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-medium text-slate-700 dark:text-neutral-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              onClick={() => {
+                setSearchOpen((prev) => {
+                  if (prev) setSearchQuery('');
+                  return !prev;
+                });
+              }}
+              title="Search messages"
+              aria-label="Search messages"
+              aria-expanded={searchOpen}
+              className={`min-h-[38px] min-w-[38px] rounded-full border flex items-center justify-center transition-colors ${
+                searchOpen
+                  ? 'border-[#2B84F6]/40 bg-[#2B84F6]/10 text-[#2B84F6]'
+                  : 'border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-700 dark:text-neutral-300'
+              }`}
             >
-              <Flag className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Report</span>
+              <Search className="w-4 h-4" />
             </button>
 
-            {chat.type === 'dm' && dmPartner && !isDmBlocked && (
-              <button
-                type="button"
-                onClick={() =>
-                  onRequestBlock({
-                    userId: dmPartner.id,
-                    username: dmPartner.username,
-                    color: dmPartner.color,
-                  })
-                }
-                title="Block user"
-                aria-label="Block user"
-                className="min-h-[38px] px-2.5 py-1.5 rounded-full border border-red-500/30 hover:bg-red-500/10 text-xs font-medium text-red-600 dark:text-red-400 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
-              >
-                <ShieldBan className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Block</span>
-              </button>
+            {chat.type === 'dm' && dmPartner && (
+              <>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void onToggleFavoriteUser({
+                      userId: dmPartner.id,
+                      username: dmPartner.username,
+                      color: dmPartner.color,
+                    })
+                  }
+                  title={
+                    favoriteUserIds.has(dmPartner.id)
+                      ? 'Remove from favorites'
+                      : 'Add to favorites'
+                  }
+                  aria-label={
+                    favoriteUserIds.has(dmPartner.id)
+                      ? 'Remove from favorites'
+                      : 'Add to favorites'
+                  }
+                  className={`min-h-[38px] min-w-[38px] rounded-full border flex items-center justify-center transition-colors ${
+                    favoriteUserIds.has(dmPartner.id)
+                      ? 'border-amber-500/40 bg-amber-500/12 text-amber-500'
+                      : 'border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-600 dark:text-neutral-300'
+                  }`}
+                >
+                  <Star
+                    className={`w-4 h-4 ${
+                      favoriteUserIds.has(dmPartner.id) ? 'fill-current' : ''
+                    }`}
+                  />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    openNicknameModal(dmPartner.id, dmPartner.username, dmPartner.color)
+                  }
+                  title={dmHasNickname ? 'Edit friend nickname' : 'Set friend nickname'}
+                  aria-label={dmHasNickname ? 'Edit friend nickname' : 'Set friend nickname'}
+                  className={`min-h-[38px] px-2.5 py-1.5 rounded-full border text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                    dmHasNickname
+                      ? 'border-[#2B84F6]/40 bg-[#2B84F6]/10 text-[#2B84F6]'
+                      : 'border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-700 dark:text-neutral-300'
+                  }`}
+                >
+                  <Tag className="w-3.5 h-3.5" />
+                  <span className="hidden md:inline">Nickname</span>
+                </button>
+              </>
             )}
 
             <button
@@ -1087,20 +1199,226 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <span>{members.length}</span>
             </button>
 
-            {chat.type === 'group' && (
+            <div className="relative" ref={headerMenuRef}>
               <button
                 type="button"
-                onClick={handleLeave}
-                disabled={leaving}
-                title="Leave group"
-                className="min-h-[38px] px-2.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 text-xs font-medium text-slate-600 dark:text-neutral-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                onClick={() => setHeaderMenuOpen((prev) => !prev)}
+                aria-label="More chat options"
+                aria-expanded={headerMenuOpen}
+                title="More options"
+                className={`min-h-[38px] min-w-[38px] rounded-full border flex items-center justify-center transition-colors ${
+                  headerMenuOpen
+                    ? 'border-[#2B84F6]/40 bg-[#2B84F6]/10 text-[#2B84F6]'
+                    : 'border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-700 dark:text-neutral-300'
+                }`}
               >
-                <LogOut className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">{leaving ? 'Leaving...' : 'Leave'}</span>
+                <MoreHorizontal className="w-4 h-4" />
               </button>
-            )}
+
+              {headerMenuOpen && (
+                <div className="absolute right-0 top-11 z-40 w-56 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/[0.1] shadow-xl p-1.5 space-y-0.5 message-enter">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false);
+                      void onUpdateChatPrefs(chat.id, { pinned: !chat.pinned });
+                    }}
+                    className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                  >
+                    <Pin className="w-3.5 h-3.5 text-[#2B84F6]" />
+                    <span>{chat.pinned ? 'Unpin chat' : 'Pin chat to top'}</span>
+                  </button>
+
+                  {chat.type === 'group' ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHeaderMenuOpen(false);
+                        void onUpdateChatPrefs(chat.id, { isFavorite: !chat.isFavorite });
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                    >
+                      <Star
+                        className={`w-3.5 h-3.5 ${
+                          chat.isFavorite ? 'text-amber-500 fill-current' : 'text-amber-500'
+                        }`}
+                      />
+                      <span>{chat.isFavorite ? 'Remove favorite' : 'Favorite group'}</span>
+                    </button>
+                  ) : (
+                    dmPartner && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setHeaderMenuOpen(false);
+                          void onToggleFavoriteUser({
+                            userId: dmPartner.id,
+                            username: dmPartner.username,
+                            color: dmPartner.color,
+                          });
+                        }}
+                        className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                      >
+                        <Star
+                          className={`w-3.5 h-3.5 ${
+                            favoriteUserIds.has(dmPartner.id)
+                              ? 'text-amber-500 fill-current'
+                              : 'text-amber-500'
+                          }`}
+                        />
+                        <span>
+                          {favoriteUserIds.has(dmPartner.id)
+                            ? 'Remove from favorites'
+                            : 'Add buddy to favorites'}
+                        </span>
+                      </button>
+                    )
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false);
+                      void onUpdateChatPrefs(chat.id, { muted: !chat.muted });
+                    }}
+                    className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                  >
+                    <BellOff className="w-3.5 h-3.5 text-slate-500 dark:text-neutral-400" />
+                    <span>{chat.muted ? 'Unmute alerts' : 'Mute alerts'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false);
+                      void onUpdateChatPrefs(chat.id, { markedUnread: true });
+                      onBackMobile();
+                    }}
+                    className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                  >
+                    <MailOpen className="w-3.5 h-3.5 text-slate-500 dark:text-neutral-400" />
+                    <span>Mark as unread</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false);
+                      void onUpdateChatPrefs(chat.id, { archived: !chat.archived });
+                    }}
+                    className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                  >
+                    <Archive className="w-3.5 h-3.5 text-slate-500 dark:text-neutral-400" />
+                    <span>{chat.archived ? 'Unarchive chat' : 'Archive chat'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleExportTranscript}
+                    className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                  >
+                    <FileDown className="w-3.5 h-3.5 text-slate-500 dark:text-neutral-400" />
+                    <span>Export transcript (.txt)</span>
+                  </button>
+
+                  <div className="my-1 border-t border-slate-100 dark:border-white/[0.08]" />
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false);
+                      onRequestReport({
+                        userId: dmPartner?.id ?? null,
+                        label: headerTitle,
+                      });
+                    }}
+                    className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                  >
+                    <Flag className="w-3.5 h-3.5 text-slate-500 dark:text-neutral-400" />
+                    <span>Report {chat.type === 'dm' ? 'user' : 'group'}</span>
+                  </button>
+
+                  {chat.type === 'dm' && dmPartner && !isDmBlocked && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHeaderMenuOpen(false);
+                        onRequestBlock({
+                          userId: dmPartner.id,
+                          username: dmPartner.username,
+                          color: dmPartner.color,
+                        });
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-red-600 dark:text-red-400 hover:bg-red-500/10"
+                    >
+                      <ShieldBan className="w-3.5 h-3.5" />
+                      <span>Block user</span>
+                    </button>
+                  )}
+
+                  {chat.type === 'group' ? (
+                    <button
+                      type="button"
+                      disabled={leaving}
+                      onClick={() => {
+                        setHeaderMenuOpen(false);
+                        void handleLeave();
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-red-600 dark:text-red-400 hover:bg-red-500/10"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>{leaving ? 'Leaving...' : 'Leave group'}</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHeaderMenuOpen(false);
+                        void onRemoveChat(chat);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-red-600 dark:text-red-400 hover:bg-red-500/10"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Remove chat from list</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </header>
+
+        {searchOpen && (
+          <div className="px-3 sm:px-5 py-2.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/90 dark:bg-[#121212] flex items-center gap-2 shrink-0">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-slate-400 dark:text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search messages, usernames, or files..."
+                autoFocus
+                className="w-full min-h-[38px] pl-9 pr-3 py-1 rounded-xl bg-white dark:bg-black border border-slate-200 dark:border-white/[0.1] text-sm focus:outline-none focus:ring-2 focus:ring-[#2B84F6]"
+              />
+            </div>
+            {searchQuery.trim() && (
+              <span className="text-xs text-slate-500 dark:text-neutral-400 tabular-nums whitespace-nowrap">
+                {displayedMessages.length} {displayedMessages.length === 1 ? 'match' : 'matches'}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setSearchQuery('');
+                setSearchOpen(false);
+              }}
+              aria-label="Close message search"
+              className="min-h-[36px] min-w-[36px] rounded-full flex items-center justify-center text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-white/[0.08]"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
 
         {/* Scrollable Message Thread */}
         <div
@@ -1137,17 +1455,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-300">
               {loadError}
             </div>
-          ) : visibleMessages.length === 0 ? (
+          ) : displayedMessages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center py-12 space-y-2">
               <p className="text-sm font-semibold text-slate-700 dark:text-neutral-200">
-                No active messages
+                {searchOpen && searchQuery.trim() ? 'No matching messages' : 'No active messages'}
               </p>
               <p className="text-xs text-slate-500 dark:text-neutral-400 max-w-xs leading-relaxed">
-                Say hello as {currentUser.username}. Messages auto-delete after 24 hours.
+                {searchOpen && searchQuery.trim()
+                  ? `Nothing matched "${searchQuery.trim()}" in the last 24 hours.`
+                  : `Say hello as ${currentUser.username}. Messages auto-delete after 24 hours.`}
               </p>
             </div>
           ) : (
-            visibleMessages.map((msg, idx) => {
+            displayedMessages.map((msg, idx) => {
               const isOwn = msg.senderId === currentUser.id;
               const senderProfile = memberById.get(msg.senderId);
               const senderDisplayName = getDisplayName(
@@ -1155,7 +1475,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 senderProfile?.username ?? msg.senderUsername,
                 nicknames,
               );
-              const prevMsg = idx > 0 ? visibleMessages[idx - 1] : null;
+              const prevMsg = idx > 0 ? displayedMessages[idx - 1] : null;
               const showDayDivider =
                 !prevMsg || formatMessageDay(prevMsg.createdAt) !== formatMessageDay(msg.createdAt);
               const att = msg.attachment ?? null;
@@ -1800,6 +2120,33 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <button
                           type="button"
                           onClick={() =>
+                            void onToggleFavoriteUser({
+                              userId: member.id,
+                              username: member.username,
+                              color: member.color,
+                            })
+                          }
+                          title={
+                            favoriteUserIds.has(member.id)
+                              ? 'Remove from favorites'
+                              : 'Add to favorites'
+                          }
+                          className={`min-h-[34px] px-2.5 py-1 rounded-full border text-xs font-medium inline-flex items-center justify-center gap-1 transition-colors ${
+                            favoriteUserIds.has(member.id)
+                              ? 'border-amber-500/40 bg-amber-500/12 text-amber-500'
+                              : 'border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.06]'
+                          }`}
+                        >
+                          <Star
+                            className={`w-3.5 h-3.5 ${
+                              favoriteUserIds.has(member.id) ? 'fill-current' : ''
+                            }`}
+                          />
+                          <span>{favoriteUserIds.has(member.id) ? 'Starred' : 'Star'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
                             openNicknameModal(member.id, member.username, member.color)
                           }
                           title={hasNick ? 'Edit nickname' : 'Set nickname'}
@@ -1810,7 +2157,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           }`}
                         >
                           <Tag className="w-3.5 h-3.5" />
-                          <span>{hasNick ? 'Nick' : 'Nick'}</span>
+                          <span>Nick</span>
                         </button>
                         <button
                           type="button"
@@ -1841,6 +2188,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             <span>Block</span>
                           </button>
                         )}
+                        {isGroupAdmin &&
+                          chat.type === 'group' &&
+                          chatMeta?.createdBy !== member.id &&
+                          onRemoveGroupMember && (
+                            <button
+                              type="button"
+                              onClick={() => void handleKickMember(member)}
+                              disabled={removingMemberId === member.id}
+                              className="min-h-[34px] px-2.5 py-1 rounded-full border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 disabled:opacity-50 text-xs font-medium text-red-600 dark:text-red-400 inline-flex items-center justify-center gap-1 transition-colors"
+                            >
+                              <UserMinus className="w-3.5 h-3.5" />
+                              <span>
+                                {removingMemberId === member.id ? 'Removing...' : 'Remove'}
+                              </span>
+                            </button>
+                          )}
                       </div>
                     )}
                   </li>

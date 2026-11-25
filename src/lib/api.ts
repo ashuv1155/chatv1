@@ -20,7 +20,12 @@ import {
   writeBatch,
   type DocumentData,
 } from 'firebase/firestore';
-import { OperationType, getFirestoreDb, handleFirestoreError } from './firebase';
+import {
+  OperationType,
+  deleteCurrentAuthUser,
+  getFirestoreDb,
+  handleFirestoreError,
+} from './firebase';
 import type {
   AttachmentKind,
   AttachmentMeta,
@@ -28,6 +33,7 @@ import type {
   ChatMessage,
   ChatReadReceipt,
   ChatSummary,
+  FavoriteEntry,
   GroupSearchResult,
   GroupVisibility,
   JoinRequest,
@@ -58,6 +64,8 @@ const COLORS = [
   '#EAB308', '#22C55E', '#10B981', '#14B8A6', '#06B6D4',
   '#0EA5E9', '#3B82F6',
 ];
+
+export const PROFILE_ACCENT_COLORS = COLORS;
 
 export const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MB
@@ -299,17 +307,25 @@ export async function resizeAvatarImage(file: File): Promise<string> {
 
 export async function updateOwnProfile(
   uid: string,
-  updates: { bio: string; avatarUrl: string | null },
-): Promise<{ bio: string; avatarUrl: string | null }> {
+  updates: { bio: string; avatarUrl: string | null; color?: string },
+): Promise<{ bio: string; avatarUrl: string | null; color?: string }> {
   const db = getFirestoreDb();
   const path = `profiles/${uid}`;
   const cleanBio = updates.bio.trim().slice(0, 240);
+  const payload: Record<string, unknown> = {
+    bio: cleanBio,
+    avatarUrl: updates.avatarUrl,
+  };
+  if (updates.color && /^#[0-9A-Fa-f]{6}$/.test(updates.color)) {
+    payload.color = updates.color;
+  }
   try {
-    await updateDoc(doc(db, 'profiles', uid), {
+    await updateDoc(doc(db, 'profiles', uid), payload);
+    return {
       bio: cleanBio,
       avatarUrl: updates.avatarUrl,
-    });
-    return { bio: cleanBio, avatarUrl: updates.avatarUrl };
+      ...(payload.color ? { color: String(payload.color) } : {}),
+    };
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -331,6 +347,11 @@ function mapUserChatDoc(docSnap: QueryDocumentSnapshot<DocumentData>): ChatSumma
     lastSenderId: data.lastSenderId ? String(data.lastSenderId) : null,
     lastSenderUsername: data.lastSenderUsername ? String(data.lastSenderUsername) : null,
     lastReadAt: toNullableIso(data.lastReadAt),
+    isFavorite: Boolean(data.isFavorite),
+    pinned: Boolean(data.pinned),
+    muted: Boolean(data.muted),
+    archived: Boolean(data.archived),
+    markedUnread: Boolean(data.markedUnread),
     partner:
       type === 'dm' && data.partnerId
         ? {
@@ -513,12 +534,51 @@ export async function markChatRead(uid: string, chatId: string): Promise<void> {
   await Promise.allSettled([
     updateDoc(doc(db, 'profiles', uid, 'myChats', chatId), {
       lastReadAt: serverTimestamp(),
+      markedUnread: false,
     }),
     setDoc(doc(db, 'chats', chatId, 'readReceipts', uid), {
       userId: uid,
       lastReadAt: serverTimestamp(),
     }),
   ]);
+}
+
+export async function updateChatPreferences(
+  uid: string,
+  chatId: string,
+  prefs: {
+    isFavorite?: boolean;
+    pinned?: boolean;
+    muted?: boolean;
+    archived?: boolean;
+    markedUnread?: boolean;
+  },
+): Promise<void> {
+  const db = getFirestoreDb();
+  const path = `profiles/${uid}/myChats/${chatId}`;
+  const payload: Record<string, boolean> = {};
+  if (typeof prefs.isFavorite === 'boolean') payload.isFavorite = prefs.isFavorite;
+  if (typeof prefs.pinned === 'boolean') payload.pinned = prefs.pinned;
+  if (typeof prefs.muted === 'boolean') payload.muted = prefs.muted;
+  if (typeof prefs.archived === 'boolean') payload.archived = prefs.archived;
+  if (typeof prefs.markedUnread === 'boolean') payload.markedUnread = prefs.markedUnread;
+  if (Object.keys(payload).length === 0) return;
+
+  try {
+    await updateDoc(doc(db, 'profiles', uid, 'myChats', chatId), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function removeChatFromMyList(uid: string, chatId: string): Promise<void> {
+  const db = getFirestoreDb();
+  const path = `profiles/${uid}/myChats/${chatId}`;
+  try {
+    await deleteDoc(doc(db, 'profiles', uid, 'myChats', chatId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
 }
 
 export async function fetchUnreadCountForChat(
@@ -949,6 +1009,40 @@ export async function leaveGroup(uid: string, chatId: string): Promise<void> {
   }
 }
 
+export async function removeGroupMember(chatId: string, targetUserId: string): Promise<void> {
+  const db = getFirestoreDb();
+  const chatPath = `chats/${chatId}`;
+
+  let chatSnap;
+  try {
+    chatSnap = await getDoc(doc(db, 'chats', chatId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, chatPath);
+  }
+
+  if (!chatSnap.exists()) {
+    throw new Error('Group not found.');
+  }
+  const chatData = chatSnap.data();
+  if (chatData.type !== 'group') {
+    throw new Error('Members can only be removed from groups.');
+  }
+  const currentCount = typeof chatData.memberCount === 'number' ? chatData.memberCount : 1;
+
+  const batch = writeBatch(db);
+  batch.delete(doc(db, 'chats', chatId, 'members', targetUserId));
+  batch.update(doc(db, 'chats', chatId), {
+    memberCount: Math.max(1, currentCount - 1),
+  });
+  batch.delete(doc(db, 'profiles', targetUserId, 'myChats', chatId));
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `${chatPath}/members/${targetUserId}`);
+  }
+}
+
 export async function startDm(profile: Profile, targetUserId: string): Promise<string> {
   if (!targetUserId || targetUserId === profile.id) {
     throw new Error('Cannot start a direct message with yourself.');
@@ -1315,6 +1409,7 @@ export async function sendMessage(
   // Best-effort notification preview updates on sender + DM recipient myChats links
   const myChatUpdate = updateDoc(doc(db, 'profiles', profile.id, 'myChats', chatId), {
     lastReadAt: serverTimestamp(),
+    markedUnread: false,
     lastMessageAt: serverTimestamp(),
     lastMessagePreview: previewText,
     lastSenderId: profile.id,
@@ -1801,4 +1896,127 @@ export async function submitReport(params: {
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
+}
+
+export function subscribeToFavorites(
+  uid: string,
+  onFavorites: (favorites: FavoriteEntry[]) => void,
+): () => void {
+  const db = getFirestoreDb();
+  const path = `profiles/${uid}/favorites`;
+  const q = query(collection(db, 'profiles', uid, 'favorites'), orderBy('createdAt', 'desc'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list: FavoriteEntry[] = snap.docs.map((docSnap) => {
+        const data = docSnap.data();
+        return {
+          targetUserId: String(data.targetUserId ?? docSnap.id),
+          username: String(data.username ?? 'Anonymous'),
+          color: String(data.color ?? '#6366F1'),
+          createdAt: toIso(data.createdAt),
+        };
+      });
+      onFavorites(list);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    },
+  );
+}
+
+export async function addFavoriteUser(
+  ownerId: string,
+  target: { userId: string; username: string; color?: string },
+): Promise<void> {
+  if (!target.userId || target.userId === ownerId) {
+    throw new Error('Cannot add yourself to favorites.');
+  }
+  const db = getFirestoreDb();
+  const path = `profiles/${ownerId}/favorites/${target.userId}`;
+  try {
+    await setDoc(doc(db, 'profiles', ownerId, 'favorites', target.userId), {
+      ownerId,
+      targetUserId: target.userId,
+      username: target.username,
+      color: target.color && /^#[0-9A-Fa-f]{6}$/.test(target.color) ? target.color : '#6366F1',
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function removeFavoriteUser(ownerId: string, targetUserId: string): Promise<void> {
+  const db = getFirestoreDb();
+  const path = `profiles/${ownerId}/favorites/${targetUserId}`;
+  try {
+    await deleteDoc(doc(db, 'profiles', ownerId, 'favorites', targetUserId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function deleteOwnAccount(uid: string): Promise<void> {
+  const db = getFirestoreDb();
+
+  // 1. Clean up chat memberships and user's myChats links
+  const myChatsSnap = await getDocs(collection(db, 'profiles', uid, 'myChats'));
+  for (const chatLink of myChatsSnap.docs) {
+    const chatId = chatLink.id;
+    try {
+      const chatSnap = await getDoc(doc(db, 'chats', chatId));
+      if (chatSnap.exists()) {
+        const memberSnap = await getDoc(doc(db, 'chats', chatId, 'members', uid));
+        if (memberSnap.exists()) {
+          const currentCount =
+            typeof chatSnap.data().memberCount === 'number' ? chatSnap.data().memberCount : 1;
+          const batch = writeBatch(db);
+          batch.delete(doc(db, 'chats', chatId, 'members', uid));
+          batch.update(doc(db, 'chats', chatId), {
+            memberCount: Math.max(0, currentCount - 1),
+          });
+          await batch.commit();
+        }
+      }
+      await Promise.allSettled([
+        deleteDoc(doc(db, 'chats', chatId, 'typing', uid)),
+        deleteDoc(doc(db, 'chats', chatId, 'readReceipts', uid)),
+      ]);
+    } catch {
+      // Continue deleting remaining links even if a room was already removed
+    }
+    await deleteDoc(chatLink.ref);
+  }
+
+  // 2. Clean up private subcollections (blocks, nicknames, favorites)
+  const [blocksSnap, nicknamesSnap, favoritesSnap] = await Promise.all([
+    getDocs(collection(db, 'profiles', uid, 'blocks')),
+    getDocs(collection(db, 'profiles', uid, 'nicknames')),
+    getDocs(collection(db, 'profiles', uid, 'favorites')),
+  ]);
+
+  const subDocs = [
+    ...blocksSnap.docs,
+    ...nicknamesSnap.docs,
+    ...favoritesSnap.docs,
+  ];
+  for (let i = 0; i < subDocs.length; i += 400) {
+    const batch = writeBatch(db);
+    for (const d of subDocs.slice(i, i + 400)) {
+      batch.delete(d.ref);
+    }
+    await batch.commit();
+  }
+
+  // 3. Clean up rate limit state & anonymous profile document
+  await Promise.allSettled([deleteDoc(doc(db, 'rateLimits', uid))]);
+  try {
+    await deleteDoc(doc(db, 'profiles', uid));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `profiles/${uid}`);
+  }
+
+  // 4. Delete Firebase Auth account (may trigger Google re-authentication if session is old)
+  await deleteCurrentAuthUser();
 }

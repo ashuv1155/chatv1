@@ -33,6 +33,11 @@ export interface ChatSummary {
   lastSenderId?: string | null;
   lastSenderUsername?: string | null;
   lastReadAt?: string | null;
+  isFavorite?: boolean;
+  pinned?: boolean;
+  muted?: boolean;
+  archived?: boolean;
+  markedUnread?: boolean;
 }
 
 export interface GroupSearchResult {
@@ -115,6 +120,13 @@ export interface BlockEntry {
   blockedId: string;
   blockedUsername: string;
   blockedColor: string;
+  createdAt: string;
+}
+
+export interface FavoriteEntry {
+  targetUserId: string;
+  username: string;
+  color: string;
   createdAt: string;
 }
 

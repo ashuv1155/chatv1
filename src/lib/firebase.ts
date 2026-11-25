@@ -4,8 +4,10 @@ import {
   GoogleAuthProvider,
   User,
   browserLocalPersistence,
+  deleteUser,
   getAuth,
   onAuthStateChanged,
+  reauthenticateWithPopup,
   setPersistence,
   signInWithPopup,
   signOut,
@@ -151,6 +153,31 @@ export async function signOutFirebase(): Promise<void> {
   const auth = getFirebaseAuth();
   if (!auth) return;
   await signOut(auth);
+}
+
+export async function deleteCurrentAuthUser(): Promise<void> {
+  const auth = getFirebaseAuth();
+  const user = auth?.currentUser;
+  if (!user) return;
+  try {
+    await deleteUser(user);
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code?: unknown }).code)
+        : '';
+    if (code === 'auth/requires-recent-login') {
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      const result = await reauthenticateWithPopup(user, provider);
+      if (result.user.uid !== user.uid) {
+        throw new Error('Please re-authenticate with the same Google account to delete this account.');
+      }
+      await deleteUser(user);
+      return;
+    }
+    throw err;
+  }
 }
 
 export function subscribeToAuth(callback: (user: User | null) => void): () => void {

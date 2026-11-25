@@ -21,8 +21,10 @@ import { SettingsScreen } from './components/SettingsScreen';
 import { Sidebar } from './components/Sidebar';
 import { TermsPrivacyScreen } from './components/TermsPrivacyScreen';
 import {
+  addFavoriteUser,
   blockUser,
   createGroup,
+  deleteOwnAccount,
   ensureUserProfile,
   fetchBlocks,
   fetchUnreadCountForChat,
@@ -30,17 +32,22 @@ import {
   joinGroup,
   leaveGroup,
   markChatRead,
+  removeChatFromMyList,
+  removeFavoriteUser,
   removeFriendNickname,
+  removeGroupMember,
   rotateUsername,
   setCustomUsername,
   setFriendNickname,
   startDm,
   submitReport,
   subscribeToAdminJoinRequests,
+  subscribeToFavorites,
   subscribeToGroupUpdates,
   subscribeToMyChats,
   subscribeToNicknames,
   unblockUser,
+  updateChatPreferences,
 } from './lib/api';
 import { signInWithGoogle, signOutFirebase, subscribeToAuth } from './lib/firebase';
 import {
@@ -57,6 +64,7 @@ import type {
   AppScreen,
   BlockEntry,
   ChatSummary,
+  FavoriteEntry,
   GroupVisibility,
   NotificationSettings,
   Profile,
@@ -105,6 +113,7 @@ export default function App() {
   const [loadingChats, setLoadingChats] = useState(false);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [blocks, setBlocks] = useState<BlockEntry[]>([]);
+  const [favorites, setFavorites] = useState<FavoriteEntry[]>([]);
   const [nicknames, setNicknames] = useState<Record<string, string>>({});
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
 
@@ -138,6 +147,11 @@ export default function App() {
     [blocks],
   );
 
+  const favoriteUserIds = useMemo(
+    () => new Set(favorites.map((f) => f.targetUserId)),
+    [favorites],
+  );
+
   const chats = useMemo(() => {
     const merged = myChatLinks.map((c) => {
       if (c.type !== 'group') return c;
@@ -159,6 +173,9 @@ export default function App() {
     });
 
     return merged.sort((a, b) => {
+      if (Boolean(a.pinned) !== Boolean(b.pinned)) {
+        return a.pinned ? -1 : 1;
+      }
       const aTime = new Date(a.lastMessageAt ?? a.createdAt).getTime();
       const bTime = new Date(b.lastMessageAt ?? b.createdAt).getTime();
       return bTime - aTime;
@@ -323,7 +340,9 @@ export default function App() {
       if (!profile || !chatId) return;
       const nowIso = new Date().toISOString();
       setMyChatLinks((prev) =>
-        prev.map((c) => (c.id === chatId ? { ...c, lastReadAt: nowIso } : c)),
+        prev.map((c) =>
+          c.id === chatId ? { ...c, lastReadAt: nowIso, markedUnread: false } : c,
+        ),
       );
       setUnreadCounts((prev) => {
         if (!(chatId in prev)) return prev;
@@ -357,6 +376,7 @@ export default function App() {
         setMyChatLinks([]);
         setGroupMetaMap({});
         setBlocks([]);
+        setFavorites([]);
         setNicknames({});
         setUnreadCounts({});
         setNotifications([]);
@@ -406,6 +426,14 @@ export default function App() {
     });
   }, [profile]);
 
+  // Real-time listener on favorite buddies
+  useEffect(() => {
+    if (!profile) return;
+    return subscribeToFavorites(profile.id, (list) => {
+      setFavorites(list);
+    });
+  }, [profile]);
+
   // Real-time listener on user's myChats (DMs + joined groups)
   useEffect(() => {
     if (!profile) return;
@@ -452,20 +480,22 @@ export default function App() {
           const prevTs = lastMsgTimestampByChatRef.current.get(c.id);
           if (c.lastMessageAt !== prevTs) {
             lastMsgTimestampByChatRef.current.set(c.id, c.lastMessageAt);
-            const senderDisplay = getDisplayName(
-              c.partner?.id ?? c.lastSenderId,
-              c.partner?.username ?? c.lastSenderUsername ?? 'Direct chat',
-              nicknamesRef.current,
-            );
-            triggerNotification({
-              chatId: c.id,
-              kind: 'message',
-              title: senderDisplay,
-              body: c.lastMessagePreview ?? 'Sent a message',
-              senderUsername: c.partner?.username ?? c.lastSenderUsername ?? undefined,
-              senderColor: c.partner?.color,
-              createdAt: c.lastMessageAt,
-            });
+            if (!c.muted) {
+              const senderDisplay = getDisplayName(
+                c.partner?.id ?? c.lastSenderId,
+                c.partner?.username ?? c.lastSenderUsername ?? 'Direct chat',
+                nicknamesRef.current,
+              );
+              triggerNotification({
+                chatId: c.id,
+                kind: 'message',
+                title: senderDisplay,
+                body: c.lastMessagePreview ?? 'Sent a message',
+                senderUsername: c.partner?.username ?? c.lastSenderUsername ?? undefined,
+                senderColor: c.partner?.color,
+                createdAt: c.lastMessageAt,
+              });
+            }
           }
         }
       }
@@ -511,19 +541,22 @@ export default function App() {
         const prevTs = lastMsgTimestampByChatRef.current.get(chatId);
         if (update.lastMessageAt !== prevTs) {
           lastMsgTimestampByChatRef.current.set(chatId, update.lastMessageAt);
-          const groupTitle = chatsRef.current.find((c) => c.id === chatId)?.name ?? 'Group';
-          const senderDisplay = update.lastSenderUsername
-            ? getDisplayName(update.lastSenderId, update.lastSenderUsername, nicknamesRef.current)
-            : null;
-          const senderPrefix = senderDisplay ? `${senderDisplay}: ` : '';
-          triggerNotification({
-            chatId,
-            kind: 'message',
-            title: groupTitle,
-            body: `${senderPrefix}${update.lastMessagePreview ?? 'New message'}`,
-            senderUsername: update.lastSenderUsername ?? undefined,
-            createdAt: update.lastMessageAt,
-          });
+          const groupChat = chatsRef.current.find((c) => c.id === chatId);
+          if (!groupChat?.muted) {
+            const groupTitle = groupChat?.name ?? 'Group';
+            const senderDisplay = update.lastSenderUsername
+              ? getDisplayName(update.lastSenderId, update.lastSenderUsername, nicknamesRef.current)
+              : null;
+            const senderPrefix = senderDisplay ? `${senderDisplay}: ` : '';
+            triggerNotification({
+              chatId,
+              kind: 'message',
+              title: groupTitle,
+              body: `${senderPrefix}${update.lastMessagePreview ?? 'New message'}`,
+              senderUsername: update.lastSenderUsername ?? undefined,
+              createdAt: update.lastMessageAt,
+            });
+          }
         }
       }
     });
@@ -585,6 +618,10 @@ export default function App() {
     if (!profile) return set;
 
     for (const chat of chats) {
+      if (chat.markedUnread) {
+        set.add(chat.id);
+        continue;
+      }
       if (!chat.lastMessageAt) continue;
       if (!chat.lastSenderId || chat.lastSenderId === profile.id) continue;
       if (blockedUserIds.has(chat.lastSenderId)) continue;
@@ -760,6 +797,78 @@ export default function App() {
     setBlocks(nextBlocks);
   };
 
+  const handleToggleFavoriteUser = async (target: {
+    userId: string;
+    username: string;
+    color?: string;
+  }) => {
+    if (!profile) return;
+    const displayName = getDisplayName(target.userId, target.username, nicknames);
+    if (favoriteUserIds.has(target.userId)) {
+      await removeFavoriteUser(profile.id, target.userId);
+      setToast(`Removed ${displayName} from favorites.`);
+    } else {
+      await addFavoriteUser(profile.id, target);
+      setToast(`Added ${displayName} to favorites.`);
+    }
+  };
+
+  const handleRemoveFavorite = async (targetUserId: string) => {
+    if (!profile) return;
+    await removeFavoriteUser(profile.id, targetUserId);
+    setToast('Removed from favorites.');
+  };
+
+  const handleUpdateChatPrefs = async (
+    chatId: string,
+    prefs: {
+      isFavorite?: boolean;
+      pinned?: boolean;
+      muted?: boolean;
+      archived?: boolean;
+      markedUnread?: boolean;
+    },
+  ) => {
+    if (!profile) return;
+    await updateChatPreferences(profile.id, chatId, prefs);
+    if (typeof prefs.pinned === 'boolean') {
+      setToast(prefs.pinned ? 'Chat pinned to top.' : 'Chat unpinned.');
+    } else if (typeof prefs.muted === 'boolean') {
+      setToast(prefs.muted ? 'Chat alerts muted.' : 'Chat alerts unmuted.');
+    } else if (typeof prefs.archived === 'boolean') {
+      setToast(prefs.archived ? 'Chat archived.' : 'Chat moved back to inbox.');
+      if (prefs.archived && activeChatId === chatId) {
+        setActiveChatId(null);
+      }
+    } else if (typeof prefs.isFavorite === 'boolean') {
+      setToast(prefs.isFavorite ? 'Added to favorites.' : 'Removed from favorites.');
+    } else if (prefs.markedUnread === true) {
+      setToast('Marked as unread.');
+    }
+  };
+
+  const handleRemoveChat = async (chat: ChatSummary) => {
+    if (!profile) return;
+    if (chat.type === 'group') {
+      await leaveGroup(profile.id, chat.id);
+      setToast(`Left ${chat.name ?? 'group'}.`);
+    } else {
+      await removeChatFromMyList(profile.id, chat.id);
+      setToast('Conversation removed from your chat list.');
+    }
+    setActiveChatId((prev) => (prev === chat.id ? null : prev));
+  };
+
+  const handleRemoveGroupMember = async (chatId: string, targetUserId: string) => {
+    await removeGroupMember(chatId, targetUserId);
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!profile) return;
+    await deleteOwnAccount(profile.id);
+    setToast('Your account has been permanently deleted.');
+  };
+
   const handleSubmitReport = async (reason: string) => {
     if (!profile || !reportTarget) return;
     await submitReport({
@@ -822,6 +931,8 @@ export default function App() {
       <SettingsScreen
         profile={profile}
         blocks={blocks}
+        favorites={favorites}
+        nicknames={nicknames}
         themePreference={themePreference}
         notificationSettings={notificationSettings}
         browserNotifPermission={browserNotifPermission}
@@ -831,9 +942,13 @@ export default function App() {
         onSetUsername={handleSetUsername}
         onRotateUsername={handleRotateUsername}
         onUnblock={handleUnblock}
+        onRemoveFavorite={handleRemoveFavorite}
+        onStartDm={handleStartDm}
+        onOpenProfileUser={openProfilePage}
         onOpenProfile={() => openProfilePage(profile.id)}
         onOpenTerms={() => setScreen('terms')}
         onSignOut={handleSignOut}
+        onDeleteAccount={handleDeleteAccount}
         onBack={() => setScreen('chat')}
       />
     );
@@ -848,6 +963,7 @@ export default function App() {
             currentUser={profile}
             nicknames={nicknames}
             isBlocked={blockedUserIds.has(viewedProfileUserId)}
+            isFavorite={favoriteUserIds.has(viewedProfileUserId)}
             onBack={() => setScreen('chat')}
             onOpenSettings={() => setScreen('settings')}
             onProfileUpdated={(updated) => setProfile(updated)}
@@ -855,6 +971,7 @@ export default function App() {
             onRotateUsername={handleRotateUsername}
             onSetNickname={handleSetNickname}
             onRemoveNickname={handleRemoveNickname}
+            onToggleFavorite={handleToggleFavoriteUser}
             onStartDm={handleStartDm}
             onRequestReport={(params) => setReportTarget(params)}
             onRequestBlock={(target) => setBlockTarget(target)}
@@ -872,6 +989,7 @@ export default function App() {
               profile={profile}
               chats={chats}
               nicknames={nicknames}
+              favoriteUserIds={favoriteUserIds}
               unreadChatIds={unreadChatIds}
               unreadCounts={unreadCounts}
               notifications={notifications}
@@ -886,6 +1004,9 @@ export default function App() {
               onClearNotifications={() => setNotifications([])}
               onJoinGroup={handleJoinGroup}
               onStartDm={handleStartDm}
+              onToggleFavoriteUser={handleToggleFavoriteUser}
+              onUpdateChatPrefs={handleUpdateChatPrefs}
+              onRemoveChat={handleRemoveChat}
               onOpenCreateGroup={() => setCreateGroupOpen(true)}
               onOpenProfile={openProfilePage}
               onOpenSettings={() => setScreen('settings')}
@@ -904,12 +1025,17 @@ export default function App() {
                 allChats={chats}
                 currentUser={profile}
                 nicknames={nicknames}
+                favoriteUserIds={favoriteUserIds}
                 blockedUserIds={blockedUserIds}
                 typingEnabled={notificationSettings.typingIndicators}
                 onChatViewed={handleChatViewed}
                 onSelectChat={(id) => setActiveChatId(id || null)}
                 onBackMobile={() => setActiveChatId(null)}
                 onLeaveGroup={handleLeaveGroup}
+                onRemoveChat={handleRemoveChat}
+                onRemoveGroupMember={handleRemoveGroupMember}
+                onToggleFavoriteUser={handleToggleFavoriteUser}
+                onUpdateChatPrefs={handleUpdateChatPrefs}
                 onStartDm={handleStartDm}
                 onOpenProfile={openProfilePage}
                 onSetNickname={handleSetNickname}
@@ -986,13 +1112,16 @@ export default function App() {
                     </div>
                   </div>
 
-                  {chats.length > 0 ? (
+                  {chats.filter((c) => !c.archived).length > 0 ? (
                     <div className="space-y-3">
                       <p className="text-xs font-semibold text-slate-500 dark:text-neutral-400">
                         Jump back into a recent chat
                       </p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        {chats.slice(0, 4).map((c) => {
+                        {chats
+                          .filter((c) => !c.archived)
+                          .slice(0, 4)
+                          .map((c) => {
                           const hasUnread = unreadChatIds.has(c.id);
                           const unreadCount = unreadCounts[c.id] ?? (hasUnread ? 1 : 0);
                           const title =

@@ -90,7 +90,7 @@ service cloud.firestore {
 
     function isValidUserChatLink(data, chatId) {
       return data.keys().hasAll(['chatId', 'type', 'name', 'description', 'partnerId', 'partnerUsername', 'partnerColor', 'joinedAt']) &&
-        data.keys().hasOnly(['chatId', 'type', 'visibility', 'name', 'description', 'partnerId', 'partnerUsername', 'partnerColor', 'lastMessageAt', 'lastMessagePreview', 'lastSenderId', 'lastSenderUsername', 'lastReadAt', 'joinedAt']) &&
+        data.keys().hasOnly(['chatId', 'type', 'visibility', 'name', 'description', 'partnerId', 'partnerUsername', 'partnerColor', 'lastMessageAt', 'lastMessagePreview', 'lastSenderId', 'lastSenderUsername', 'lastReadAt', 'isFavorite', 'pinned', 'muted', 'archived', 'markedUnread', 'joinedAt']) &&
         data.chatId is string && data.chatId == chatId &&
         data.type in ['dm', 'group'] &&
         (!('visibility' in data) || data.visibility in ['public', 'private']) &&
@@ -104,6 +104,11 @@ service cloud.firestore {
         (!('lastSenderId' in data) || data.lastSenderId == null || isValidId(data.lastSenderId)) &&
         (!('lastSenderUsername' in data) || data.lastSenderUsername == null || isValidUsername(data.lastSenderUsername)) &&
         (!('lastReadAt' in data) || data.lastReadAt == null || data.lastReadAt is timestamp) &&
+        (!('isFavorite' in data) || data.isFavorite is bool) &&
+        (!('pinned' in data) || data.pinned is bool) &&
+        (!('muted' in data) || data.muted is bool) &&
+        (!('archived' in data) || data.archived is bool) &&
+        (!('markedUnread' in data) || data.markedUnread is bool) &&
         data.joinedAt is timestamp;
     }
 
@@ -124,6 +129,16 @@ service cloud.firestore {
         data.targetUserId is string && data.targetUserId == targetUserId &&
         data.nickname is string && data.nickname.trim().size() >= 1 && data.nickname.size() <= 32 &&
         data.updatedAt is timestamp;
+    }
+
+    function isValidFavorite(data, ownerId, targetUserId) {
+      return data.keys().hasAll(['ownerId', 'targetUserId', 'username', 'color', 'createdAt']) &&
+        data.keys().hasOnly(['ownerId', 'targetUserId', 'username', 'color', 'createdAt']) &&
+        data.ownerId is string && data.ownerId == ownerId &&
+        data.targetUserId is string && data.targetUserId == targetUserId &&
+        isValidUsername(data.username) &&
+        isValidHexColor(data.color) &&
+        data.createdAt is timestamp;
     }
 
     function isValidRateLimit(data, userId) {
@@ -306,12 +321,12 @@ service cloud.firestore {
             isOwner(userId) &&
             !existing().banned &&
             incoming().banned == existing().banned &&
-            incoming().color == existing().color &&
             (
-              // Action: Update bio / avatarUrl
-              incoming().diff(existing()).affectedKeys().hasOnly(['bio', 'avatarUrl']) ||
+              // Action: Update bio, avatarUrl, or avatar accent color
+              incoming().diff(existing()).affectedKeys().hasOnly(['bio', 'avatarUrl', 'color']) ||
               // Action: Set custom username or rotate random username (records history)
               (
+                incoming().color == existing().color &&
                 incoming().diff(existing()).affectedKeys().hasOnly(['username', 'lastUsernameChangeAt', 'usernameHistory']) &&
                 incoming().lastUsernameChangeAt == request.time
               )
@@ -319,7 +334,7 @@ service cloud.firestore {
           )
         );
 
-      allow delete: if false;
+      allow delete: if isOwner(userId) && isValidId(userId);
 
       // User's joined groups and DM index
       match /myChats/{chatId} {
@@ -356,14 +371,21 @@ service cloud.firestore {
             // Owner marks conversation as read
             (
               isOwner(userId) &&
-              incoming().diff(existing()).affectedKeys().hasOnly(['lastReadAt']) &&
-              incoming().lastReadAt == request.time
+              incoming().diff(existing()).affectedKeys().hasOnly(['lastReadAt', 'markedUnread']) &&
+              incoming().lastReadAt == request.time &&
+              (!('markedUnread' in incoming()) || incoming().markedUnread == false)
+            ) ||
+            // Owner updates chat preferences (favorite, pin, mute, archive, mark unread)
+            (
+              isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['isFavorite', 'pinned', 'muted', 'archived', 'markedUnread'])
             ) ||
             // Owner sends message and records latest preview + read state
             (
               isOwner(userId) &&
-              incoming().diff(existing()).affectedKeys().hasOnly(['lastReadAt', 'lastMessageAt', 'lastMessagePreview', 'lastSenderId', 'lastSenderUsername']) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['lastReadAt', 'markedUnread', 'lastMessageAt', 'lastMessagePreview', 'lastSenderId', 'lastSenderUsername']) &&
               incoming().lastReadAt == request.time &&
+              (!('markedUnread' in incoming()) || incoming().markedUnread == false) &&
               incoming().lastMessageAt == request.time &&
               incoming().lastSenderId == request.auth.uid
             ) ||
@@ -380,7 +402,13 @@ service cloud.firestore {
             )
           );
 
-        allow delete: if isOwner(userId) && isValidId(chatId);
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(chatId) && (
+          isOwner(userId) ||
+          (
+            get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group' &&
+            isGroupAdmin(chatId)
+          )
+        );
       }
 
       // User's block list
@@ -413,6 +441,22 @@ service cloud.firestore {
 
         allow delete: if isOwner(userId) && isValidId(userId) && isValidId(targetUserId);
       }
+
+      // User's favorite buddies
+      match /favorites/{targetUserId} {
+        allow get, list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(targetUserId) &&
+          targetUserId != userId &&
+          isValidFavorite(incoming(), userId, targetUserId) &&
+          incoming().createdAt == request.time &&
+          exists(/databases/$(database)/documents/profiles/$(targetUserId));
+
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(targetUserId);
+        allow update: if false;
+      }
     }
 
     // -------------------------------------------------------------------------
@@ -443,7 +487,7 @@ service cloud.firestore {
           )
         );
 
-      allow delete: if false;
+      allow delete: if isOwner(userId) && isValidId(userId);
     }
 
     // -------------------------------------------------------------------------
@@ -497,13 +541,20 @@ service cloud.firestore {
             existing().createdBy == request.auth.uid &&
             incoming().memberCount == existing().memberCount + 1
           ) ||
-          // Leave group action
+          // Leave chat / self-remove membership action (group leave or account deletion)
           (
-            existing().type == 'group' &&
             incoming().diff(existing()).affectedKeys().hasOnly(['memberCount']) &&
             exists(/databases/$(database)/documents/chats/$(chatId)/members/$(request.auth.uid)) &&
             !existsAfter(/databases/$(database)/documents/chats/$(chatId)/members/$(request.auth.uid)) &&
             incoming().memberCount == existing().memberCount - 1
+          ) ||
+          // Group admin removes a member
+          (
+            existing().type == 'group' &&
+            existing().createdBy == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['memberCount']) &&
+            incoming().memberCount == existing().memberCount - 1 &&
+            incoming().memberCount >= 1
           ) ||
           // Member sends a message and updates latest message preview for notifications
           (
@@ -567,10 +618,14 @@ service cloud.firestore {
             )
           );
 
-        allow delete: if isOwner(memberId) &&
-          isValidId(chatId) &&
-          isValidId(memberId) &&
-          get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group';
+        allow delete: if isSignedIn() && isValidId(chatId) && isValidId(memberId) && (
+          isOwner(memberId) ||
+          (
+            get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group' &&
+            isGroupAdmin(chatId) &&
+            memberId != request.auth.uid
+          )
+        );
 
         allow update: if false;
       }

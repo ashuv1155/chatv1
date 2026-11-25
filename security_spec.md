@@ -12,6 +12,8 @@
 8. **5/10s Rate Limit & Banned Guard**: Every message must atomically advance `/rateLimits/{uid}` (max 5 messages per 10 seconds). Banned users cannot create chats, join groups, request private groups, or send messages, attachments, reactions, or typing updates.
 9. **DM Isolation & Reports Privacy**: Only `type == 'group'` chats can be listed globally. Reports are create-only for signed-in users and readable only by admins.
 10. **Typing Effects, Reactions, Read Receipts & Notification Metadata**: Typing states (`/chats/{chatId}/typing/{userId}`), emoji reactions (`/chats/{chatId}/reactions/{reactionId}` keyed as `${messageId}_${userId}`), and read receipts (`/chats/{chatId}/readReceipts/{userId}`) can only be read by current chat members and written/deleted strictly by their owner (`request.auth.uid`). Chat `lastMessage*` previews can only be updated by current chat members with `lastSenderId == request.auth.uid` and `lastMessageAt == request.time`.
+11. **Favorites & Per-User Chat Options**: `/profiles/{userId}/favorites/{targetUserId}` is strictly owner-only, cannot target self, and requires an existing target profile. `/profiles/{userId}/myChats/{chatId}` allows owners to update `isFavorite`, `pinned`, `muted`, `archived`, and `markedUnread` booleans.
+12. **Account Self-Deletion & Group Admin Member Removal**: Users may delete their own `/profiles/{userId}`, `/rateLimits/{userId}`, owned subcollections, and chat memberships. Group admins (`createdBy == request.auth.uid`) may remove non-admin members from their groups (`members/{memberId}` and the member's `myChats/{chatId}`).
 
 ## 2. Adversarial Test Payloads
 1. **Shadow Field Injection on Profile**: Adding `isAdmin: true` or arbitrary keys -> Rejected (`hasOnly` check).
