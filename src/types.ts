@@ -28,6 +28,11 @@ export interface ChatSummary {
   createdAt: string;
   partner?: Profile | null;
   memberCount?: number;
+  lastMessageAt?: string | null;
+  lastMessagePreview?: string | null;
+  lastSenderId?: string | null;
+  lastSenderUsername?: string | null;
+  lastReadAt?: string | null;
 }
 
 export interface GroupSearchResult {
@@ -49,6 +54,14 @@ export interface JoinRequest {
   color: string;
   status: JoinRequestStatus;
   createdAt: string;
+  updatedAt: string;
+}
+
+export interface TypingParticipant {
+  userId: string;
+  username: string;
+  color: string;
+  isTyping: boolean;
   updatedAt: string;
 }
 
@@ -81,6 +94,24 @@ export interface BlockEntry {
   blockedUsername: string;
   blockedColor: string;
   createdAt: string;
+}
+
+export interface AppNotification {
+  id: string;
+  chatId: string;
+  title: string;
+  body: string;
+  senderUsername?: string;
+  senderColor?: string;
+  kind: 'message' | 'join_request' | 'group_approved';
+  createdAt: string;
+  read: boolean;
+}
+
+export interface NotificationSettings {
+  browserNotifications: boolean;
+  soundEnabled: boolean;
+  typingIndicators: boolean;
 }
 
 export type ThemePreference = 'system' | 'dark' | 'light';

@@ -30,11 +30,13 @@ import {
   fetchChatMembers,
   fetchChatMetadata,
   fetchOlderMessages,
-  fetchPendingJoinRequests,
   hasViewedOnceMessage,
   openViewOncePhoto,
   sendMessage,
+  setTypingStatus,
+  subscribeToAdminJoinRequests,
   subscribeToLatestMessages,
+  subscribeToTyping,
 } from '../lib/api';
 import type {
   AttachmentKind,
@@ -44,12 +46,15 @@ import type {
   GroupVisibility,
   JoinRequest,
   Profile,
+  TypingParticipant,
 } from '../types';
 
 interface ChatViewProps {
   chat: ChatSummary;
   currentUser: Profile;
   blockedUserIds: Set<string>;
+  typingEnabled: boolean;
+  onChatViewed?: (chatId: string) => void;
   onBackMobile: () => void;
   onLeaveGroup: (chatId: string) => Promise<void>;
   onStartDm: (targetUserId: string) => Promise<void>;
@@ -96,6 +101,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   chat,
   currentUser,
   blockedUserIds,
+  typingEnabled,
+  onChatViewed,
   onBackMobile,
   onLeaveGroup,
   onStartDm,
@@ -146,6 +153,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
     viewOnce: boolean;
   } | null>(null);
 
+  const [rawTypingUsers, setRawTypingUsers] = useState<TypingParticipant[]>([]);
+  const [typingClockMs, setTypingClockMs] = useState(() => Date.now());
+
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -153,10 +163,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const isAtBottomRef = useRef(true);
   const hasScrolledInitialRef = useRef(false);
   const photoUrlsRef = useRef<Record<string, string>>({});
+  const lastTypingSentRef = useRef<number>(0);
+  const typingIdleTimerRef = useRef<number | null>(null);
+  const isTypingSentRef = useRef<boolean>(false);
+  const currentUserRef = useRef<Profile>(currentUser);
 
   useEffect(() => {
     photoUrlsRef.current = photoUrls;
   }, [photoUrls]);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
 
   const scrollToBottom = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -211,22 +229,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
       });
 
     fetchChatMetadata(chat.id)
-      .then(async (meta) => {
-        if (cancelled) return;
-        setChatMeta(meta);
-        if (
-          chat.type === 'group' &&
-          meta &&
-          meta.createdBy === currentUser.id &&
-          meta.visibility === 'private'
-        ) {
-          try {
-            const reqs = await fetchPendingJoinRequests(chat.id);
-            if (!cancelled) setJoinRequests(reqs);
-          } catch {
-            // ignore if unable to fetch requests
-          }
-        }
+      .then((meta) => {
+        if (!cancelled) setChatMeta(meta);
       })
       .catch(() => {
         if (!cancelled) setChatMeta(null);
@@ -239,6 +243,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setHasMore((prevMore) => (oldestPagedDoc ? prevMore : moreAvailable));
       setLoadingInitial(false);
 
+      if (!document.hidden && latest.length > 0) {
+        onChatViewed?.(chat.id);
+      }
+
       if (!hasScrolledInitialRef.current || isAtBottomRef.current) {
         hasScrolledInitialRef.current = true;
         requestAnimationFrame(() => {
@@ -247,11 +255,85 @@ export const ChatView: React.FC<ChatViewProps> = ({
       }
     });
 
+    const unsubTyping = subscribeToTyping(chat.id, (participants) => {
+      if (!cancelled) {
+        setRawTypingUsers(participants);
+        setTypingClockMs(Date.now());
+      }
+    });
+
+    const activeChatIdForCleanup = chat.id;
     return () => {
       cancelled = true;
       unsubscribe();
+      unsubTyping();
+      if (typingIdleTimerRef.current) {
+        window.clearTimeout(typingIdleTimerRef.current);
+        typingIdleTimerRef.current = null;
+      }
+      if (isTypingSentRef.current) {
+        isTypingSentRef.current = false;
+        lastTypingSentRef.current = 0;
+        void setTypingStatus(activeChatIdForCleanup, currentUserRef.current, false);
+      }
+      setRawTypingUsers([]);
     };
-  }, [chat.id, chat.type, currentUser.id, scrollToBottom]);
+  }, [chat.id, chat.type, currentUser.id, scrollToBottom, onChatViewed]);
+
+  // Live join requests subscription for private group admins
+  useEffect(() => {
+    if (
+      chat.type !== 'group' ||
+      !chatMeta ||
+      chatMeta.createdBy !== currentUser.id ||
+      chatMeta.visibility !== 'private'
+    ) {
+      return;
+    }
+
+    return subscribeToAdminJoinRequests([chat.id], (_chatId, reqs) => {
+      setJoinRequests(reqs);
+    });
+  }, [chat.id, chat.type, chatMeta, currentUser.id]);
+
+  // Periodically sweep stale remote typing indicators if someone disconnects mid-typing
+  useEffect(() => {
+    if (rawTypingUsers.length === 0) return;
+    const timer = window.setInterval(() => {
+      setTypingClockMs(Date.now());
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [rawTypingUsers.length]);
+
+  const activeTypists = useMemo(() => {
+    if (!typingEnabled) return [];
+    return rawTypingUsers.filter((p) => {
+      if (!p.isTyping || p.userId === currentUser.id || blockedUserIds.has(p.userId)) {
+        return false;
+      }
+      const updatedMs = new Date(p.updatedAt).getTime();
+      if (Number.isNaN(updatedMs)) return true;
+      return typingClockMs - updatedMs <= 6500;
+    });
+  }, [rawTypingUsers, typingEnabled, currentUser.id, blockedUserIds, typingClockMs]);
+
+  const clearTypingIndicator = useCallback(() => {
+    if (typingIdleTimerRef.current) {
+      window.clearTimeout(typingIdleTimerRef.current);
+      typingIdleTimerRef.current = null;
+    }
+    if (isTypingSentRef.current) {
+      isTypingSentRef.current = false;
+      lastTypingSentRef.current = 0;
+      void setTypingStatus(chat.id, currentUserRef.current, false);
+    }
+  }, [chat.id]);
+
+  useEffect(() => {
+    if (!typingEnabled) {
+      clearTypingIndicator();
+    }
+  }, [typingEnabled, clearTypingIndicator]);
 
   const visibleMessages = useMemo(() => {
     const liveIds = new Set(liveMessages.map((m) => m.id));
@@ -428,6 +510,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       return;
     }
 
+    clearTypingIndicator();
     setSending(true);
     setSendError(null);
     const outgoingText = trimmed;
@@ -451,6 +534,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         outgoingAttachment && attachmentKind
           ? { file: outgoingAttachment.file, kind: attachmentKind }
           : undefined,
+        dmPartner?.id ?? null,
       );
       recentSendTimesRef.current.push(Date.now());
       requestAnimationFrame(() => scrollToBottom());
@@ -467,6 +551,34 @@ export const ChatView: React.FC<ChatViewProps> = ({
       }
     } finally {
       setSending(false);
+    }
+  };
+
+  const handleDraftChange = (nextValue: string) => {
+    setDraft(nextValue);
+
+    if (!typingEnabled || currentUser.banned || isDmBlocked) {
+      clearTypingIndicator();
+      return;
+    }
+
+    if (nextValue.trim().length === 0) {
+      clearTypingIndicator();
+      return;
+    }
+
+    if (typingIdleTimerRef.current) {
+      window.clearTimeout(typingIdleTimerRef.current);
+    }
+    typingIdleTimerRef.current = window.setTimeout(() => {
+      clearTypingIndicator();
+    }, 3000);
+
+    const now = Date.now();
+    if (!isTypingSentRef.current || now - lastTypingSentRef.current >= 2400) {
+      isTypingSentRef.current = true;
+      lastTypingSentRef.current = now;
+      void setTypingStatus(chat.id, currentUser, true);
     }
   };
 
@@ -770,7 +882,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     </div>
                   )}
 
-                  <div className="group flex items-start gap-3">
+                  <div className="group message-enter flex items-start gap-3">
                     <button
                       type="button"
                       onClick={() => onOpenProfile(msg.senderId)}
@@ -950,6 +1062,48 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
 
         <div className="p-3 sm:p-4 border-t border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#111622] shrink-0 space-y-2.5">
+          {activeTypists.length > 0 && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="flex items-center gap-2.5 px-1 pb-0.5 text-xs text-slate-600 dark:text-slate-300 message-enter"
+            >
+              <div className="flex -space-x-1.5 shrink-0">
+                {activeTypists.slice(0, 3).map((typist) => (
+                  <div
+                    key={typist.userId}
+                    className="h-5 w-5 rounded-full ring-2 ring-white dark:ring-[#111622] flex items-center justify-center text-[10px] font-bold text-white"
+                    style={{ backgroundColor: typist.color }}
+                  >
+                    {typist.username.slice(0, 1).toUpperCase()}
+                  </div>
+                ))}
+              </div>
+
+              <div className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-100 dark:bg-white/[0.06]">
+                <span
+                  className="typing-dot w-1.5 h-1.5 rounded-full bg-indigo-500"
+                  style={{ animationDelay: '0ms' }}
+                />
+                <span
+                  className="typing-dot w-1.5 h-1.5 rounded-full bg-indigo-500"
+                  style={{ animationDelay: '160ms' }}
+                />
+                <span
+                  className="typing-dot w-1.5 h-1.5 rounded-full bg-indigo-500"
+                  style={{ animationDelay: '320ms' }}
+                />
+              </div>
+
+              <span className="truncate font-medium text-slate-500 dark:text-slate-400">
+                {activeTypists.length === 1
+                  ? `${activeTypists[0].username} is typing`
+                  : activeTypists.length === 2
+                    ? `${activeTypists[0].username} and ${activeTypists[1].username} are typing`
+                    : `${activeTypists[0].username} and ${activeTypists.length - 1} others are typing`}
+              </span>
+            </div>
+          )}
           {sendError && (
             <p role="alert" className="text-xs text-red-600 dark:text-red-400 px-1">
               {sendError}
@@ -1063,7 +1217,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <div className="flex-1 relative">
                 <textarea
                   value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
+                  onChange={(e) => handleDraftChange(e.target.value)}
                   onKeyDown={handleKeyDown}
                   maxLength={1000}
                   rows={1}

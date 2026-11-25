@@ -1,23 +1,36 @@
 import React, { useMemo, useState } from 'react';
 import {
   ArrowLeft,
+  Bell,
   Laptop,
   LogOut,
+  MessageSquareMore,
   Moon,
   RefreshCw,
   ShieldAlert,
   Sun,
   UserCircle2,
   UserX,
+  Volume2,
 } from 'lucide-react';
 import { Avatar } from './Avatar';
-import type { BlockEntry, Profile, ThemePreference } from '../types';
+import type { BrowserNotifPermission } from '../lib/notifications';
+import type {
+  BlockEntry,
+  NotificationSettings,
+  Profile,
+  ThemePreference,
+} from '../types';
 
 interface SettingsScreenProps {
   profile: Profile;
   blocks: BlockEntry[];
   themePreference: ThemePreference;
+  notificationSettings: NotificationSettings;
+  browserNotifPermission: BrowserNotifPermission;
   onChangeTheme: (pref: ThemePreference) => void;
+  onUpdateNotificationSettings: (next: NotificationSettings) => void;
+  onRequestBrowserPermission: () => Promise<void>;
   onRotateUsername: () => Promise<void>;
   onUnblock: (blockedId: string) => Promise<void>;
   onOpenProfile: () => void;
@@ -46,7 +59,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   profile,
   blocks,
   themePreference,
+  notificationSettings,
+  browserNotifPermission,
   onChangeTheme,
+  onUpdateNotificationSettings,
+  onRequestBrowserPermission,
   onRotateUsername,
   onUnblock,
   onOpenProfile,
@@ -57,6 +74,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [rotating, setRotating] = useState(false);
   const [unblockingId, setUnblockingId] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const [requestingPerm, setRequestingPerm] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
   const cooldownText = useMemo(
@@ -178,6 +196,145 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               <RefreshCw className={`w-4 h-4 ${rotating ? 'animate-spin' : ''}`} />
               <span>{rotating ? 'Generating...' : 'New random username'}</span>
             </button>
+          </div>
+        </section>
+
+        <section className="rounded-2xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] p-6 space-y-5">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold">Notifications & Typing</h2>
+            {browserNotifPermission === 'default' && (
+              <button
+                type="button"
+                disabled={requestingPerm}
+                onClick={async () => {
+                  setRequestingPerm(true);
+                  try {
+                    await onRequestBrowserPermission();
+                  } finally {
+                    setRequestingPerm(false);
+                  }
+                }}
+                className="min-h-[36px] px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              >
+                <Bell className="w-3.5 h-3.5" />
+                <span>{requestingPerm ? 'Requesting...' : 'Allow browser alerts'}</span>
+              </button>
+            )}
+          </div>
+
+          <div className="divide-y divide-slate-200 dark:divide-white/[0.08]">
+            <div className="pb-4 flex items-center justify-between gap-4">
+              <div className="flex items-start gap-3 min-w-0">
+                <Bell className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium">Browser notifications</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {browserNotifPermission === 'denied'
+                      ? 'Blocked in browser settings. Allow notifications in site permissions to enable desktop alerts.'
+                      : browserNotifPermission === 'unsupported'
+                        ? 'Desktop notifications are not supported in this browser; in-app alerts remain active.'
+                        : 'Alert when new messages or join requests arrive while away from a chat'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={notificationSettings.browserNotifications}
+                aria-label="Toggle browser notifications"
+                onClick={() => {
+                  const nextVal = !notificationSettings.browserNotifications;
+                  onUpdateNotificationSettings({
+                    ...notificationSettings,
+                    browserNotifications: nextVal,
+                  });
+                  if (nextVal && browserNotifPermission === 'default') {
+                    void onRequestBrowserPermission();
+                  }
+                }}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                  notificationSettings.browserNotifications
+                    ? 'bg-indigo-600'
+                    : 'bg-slate-300 dark:bg-white/[0.15]'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-xs transition-transform ${
+                    notificationSettings.browserNotifications ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <div className="py-4 flex items-center justify-between gap-4">
+              <div className="flex items-start gap-3 min-w-0">
+                <Volume2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium">Notification sound</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Play a subtle chime when incoming messages or requests arrive
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={notificationSettings.soundEnabled}
+                aria-label="Toggle notification sound"
+                onClick={() =>
+                  onUpdateNotificationSettings({
+                    ...notificationSettings,
+                    soundEnabled: !notificationSettings.soundEnabled,
+                  })
+                }
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                  notificationSettings.soundEnabled
+                    ? 'bg-indigo-600'
+                    : 'bg-slate-300 dark:bg-white/[0.15]'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-xs transition-transform ${
+                    notificationSettings.soundEnabled ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <div className="pt-4 flex items-center justify-between gap-4">
+              <div className="flex items-start gap-3 min-w-0">
+                <MessageSquareMore className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium">Typing effects</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Show live typing indicators in open conversations and broadcast when you type
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={notificationSettings.typingIndicators}
+                aria-label="Toggle typing effects"
+                onClick={() =>
+                  onUpdateNotificationSettings({
+                    ...notificationSettings,
+                    typingIndicators: !notificationSettings.typingIndicators,
+                  })
+                }
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                  notificationSettings.typingIndicators
+                    ? 'bg-indigo-600'
+                    : 'bg-slate-300 dark:bg-white/[0.15]'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-xs transition-transform ${
+                    notificationSettings.typingIndicators ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
           </div>
         </section>
 

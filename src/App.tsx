@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
 import {
+  Bell,
   Clock,
   Lock,
   MessageSquare,
   Plus,
   ShieldCheck,
   UserCircle2,
+  X,
 } from 'lucide-react';
 import { Avatar } from './components/Avatar';
 import { BlockConfirmModal } from './components/BlockConfirmModal';
@@ -23,25 +25,40 @@ import {
   createGroup,
   ensureUserProfile,
   fetchBlocks,
-  fetchMyChats,
   joinGroup,
   leaveGroup,
+  markChatRead,
   rotateUsername,
   startDm,
   submitReport,
+  subscribeToAdminJoinRequests,
+  subscribeToGroupUpdates,
+  subscribeToMyChats,
   unblockUser,
 } from './lib/api';
 import { signInWithGoogle, signOutFirebase, subscribeToAuth } from './lib/firebase';
+import {
+  type BrowserNotifPermission,
+  getBrowserNotificationPermission,
+  loadNotificationSettings,
+  playNotificationChime,
+  requestBrowserNotificationPermission,
+  saveNotificationSettings,
+  showBrowserNotification,
+} from './lib/notifications';
 import type {
+  AppNotification,
   AppScreen,
   BlockEntry,
   ChatSummary,
   GroupVisibility,
+  NotificationSettings,
   Profile,
   ThemePreference,
 } from './types';
 
 const THEME_STORAGE_KEY = 'buddychat_theme';
+const BASE_TITLE = 'Buddy Chat — Anonymous Real-Time Chat';
 
 function readStoredThemePreference(): ThemePreference {
   try {
@@ -51,6 +68,16 @@ function readStoredThemePreference(): ThemePreference {
     // ignore storage errors
   }
   return 'system';
+}
+
+interface GroupMetaPatch {
+  createdBy: string | null;
+  visibility: GroupVisibility;
+  memberCount: number;
+  lastMessageAt: string | null;
+  lastMessagePreview: string | null;
+  lastSenderId: string | null;
+  lastSenderUsername: string | null;
 }
 
 export default function App() {
@@ -67,10 +94,23 @@ export default function App() {
   const [showPublicTerms, setShowPublicTerms] = useState(false);
   const [themePreference, setThemePreference] = useState<ThemePreference>(readStoredThemePreference);
 
-  const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [myChatLinks, setMyChatLinks] = useState<ChatSummary[]>([]);
+  const [groupMetaMap, setGroupMetaMap] = useState<Record<string, GroupMetaPatch>>({});
   const [loadingChats, setLoadingChats] = useState(false);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [blocks, setBlocks] = useState<BlockEntry[]>([]);
+
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [notificationToast, setNotificationToast] = useState<AppNotification | null>(null);
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(
+    loadNotificationSettings,
+  );
+  const [browserNotifPermission, setBrowserNotifPermission] = useState<BrowserNotifPermission>(
+    getBrowserNotificationPermission,
+  );
+  const [tabHidden, setTabHidden] = useState<boolean>(() =>
+    typeof document !== 'undefined' ? document.hidden : false,
+  );
 
   const [createGroupOpen, setCreateGroupOpen] = useState(false);
   const [reportTarget, setReportTarget] = useState<{
@@ -84,6 +124,90 @@ export default function App() {
     color?: string;
   } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+
+  const blockedUserIds = useMemo(
+    () => new Set(blocks.map((b) => b.blockedId)),
+    [blocks],
+  );
+
+  const chats = useMemo(() => {
+    const merged = myChatLinks.map((c) => {
+      if (c.type !== 'group') return c;
+      const meta = groupMetaMap[c.id];
+      if (!meta) return c;
+      const linkTime = c.lastMessageAt ? new Date(c.lastMessageAt).getTime() : 0;
+      const metaTime = meta.lastMessageAt ? new Date(meta.lastMessageAt).getTime() : 0;
+      const useMetaMsg = metaTime >= linkTime && Boolean(meta.lastMessageAt);
+      return {
+        ...c,
+        createdBy: meta.createdBy ?? c.createdBy,
+        visibility: meta.visibility,
+        memberCount: meta.memberCount,
+        lastMessageAt: useMetaMsg ? meta.lastMessageAt : c.lastMessageAt,
+        lastMessagePreview: useMetaMsg ? meta.lastMessagePreview : c.lastMessagePreview,
+        lastSenderId: useMetaMsg ? meta.lastSenderId : c.lastSenderId,
+        lastSenderUsername: useMetaMsg ? meta.lastSenderUsername : c.lastSenderUsername,
+      };
+    });
+
+    return merged.sort((a, b) => {
+      const aTime = new Date(a.lastMessageAt ?? a.createdAt).getTime();
+      const bTime = new Date(b.lastMessageAt ?? b.createdAt).getTime();
+      return bTime - aTime;
+    });
+  }, [myChatLinks, groupMetaMap]);
+
+  const activeChat = useMemo(
+    () => chats.find((c) => c.id === activeChatId) ?? null,
+    [chats, activeChatId],
+  );
+
+  // Refs for real-time callbacks so listeners don't churn when UI selection changes
+  const activeChatIdRef = useRef<string | null>(activeChatId);
+  const screenRef = useRef<AppScreen>(screen);
+  const blockedIdsRef = useRef<Set<string>>(blockedUserIds);
+  const notifSettingsRef = useRef<NotificationSettings>(notificationSettings);
+  const chatsRef = useRef<ChatSummary[]>(chats);
+
+  const myChatsInitializedRef = useRef(false);
+  const knownChatIdsRef = useRef<Set<string>>(new Set());
+  const lastMsgTimestampByChatRef = useRef<Map<string, string>>(new Map());
+  const notifiedKeysRef = useRef<Set<string>>(new Set());
+  const seenJoinReqKeysRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    activeChatIdRef.current = activeChatId;
+  }, [activeChatId]);
+
+  useEffect(() => {
+    screenRef.current = screen;
+  }, [screen]);
+
+  useEffect(() => {
+    blockedIdsRef.current = blockedUserIds;
+  }, [blockedUserIds]);
+
+  useEffect(() => {
+    notifSettingsRef.current = notificationSettings;
+  }, [notificationSettings]);
+
+  useEffect(() => {
+    chatsRef.current = chats;
+  }, [chats]);
+
+  // Track tab visibility / focus for smart browser notifications and read marking
+  useEffect(() => {
+    const syncVisibility = () => {
+      setTabHidden(document.hidden);
+      setBrowserNotifPermission(getBrowserNotificationPermission());
+    };
+    document.addEventListener('visibilitychange', syncVisibility);
+    window.addEventListener('focus', syncVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', syncVisibility);
+      window.removeEventListener('focus', syncVisibility);
+    };
+  }, []);
 
   // Apply device-default theme ('system') or explicit 'light'/'dark' across browsers
   useEffect(() => {
@@ -119,20 +243,89 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const loadWorkspaceData = useCallback(async (uid: string) => {
-    setLoadingChats(true);
-    try {
-      const [chatRows, blockRows] = await Promise.all([
-        fetchMyChats(uid),
-        fetchBlocks(uid),
-      ]);
-      setChats(chatRows);
-      setBlocks(blockRows);
-    } finally {
-      setLoadingChats(false);
+  useEffect(() => {
+    if (!notificationToast) return;
+    const timer = window.setTimeout(() => setNotificationToast(null), 4800);
+    return () => window.clearTimeout(timer);
+  }, [notificationToast]);
+
+  const handleUpdateNotificationSettings = useCallback((next: NotificationSettings) => {
+    setNotificationSettings(next);
+    saveNotificationSettings(next);
+  }, []);
+
+  const handleRequestBrowserPermission = useCallback(async () => {
+    const perm = await requestBrowserNotificationPermission();
+    setBrowserNotifPermission(perm);
+    if (perm === 'granted') {
+      setToast('Browser notifications enabled.');
+    } else if (perm === 'denied') {
+      setToast('Browser notifications were blocked in browser settings.');
     }
   }, []);
 
+  const triggerNotification = useCallback(
+    (input: Omit<AppNotification, 'id' | 'read'>) => {
+      const isLookingAtChat =
+        input.kind === 'message' &&
+        input.chatId === activeChatIdRef.current &&
+        screenRef.current === 'chat' &&
+        !document.hidden;
+
+      if (isLookingAtChat) return;
+
+      const dedupeKey = `${input.kind}:${input.chatId}:${input.createdAt}:${input.title}`;
+      if (notifiedKeysRef.current.has(dedupeKey)) return;
+      notifiedKeysRef.current.add(dedupeKey);
+
+      const notif: AppNotification = {
+        ...input,
+        id: dedupeKey,
+        read: false,
+      };
+
+      setNotifications((prev) => [notif, ...prev].slice(0, 30));
+
+      if (notifSettingsRef.current.soundEnabled) {
+        playNotificationChime();
+      }
+
+      if (!document.hidden) {
+        setNotificationToast(notif);
+      }
+
+      if (notifSettingsRef.current.browserNotifications) {
+        showBrowserNotification(notif.title, notif.body, () => {
+          setActiveChatId(notif.chatId);
+          setScreen('chat');
+        });
+      }
+    },
+    [],
+  );
+
+  const handleChatViewed = useCallback(
+    (chatId: string) => {
+      if (!profile || !chatId) return;
+      const nowIso = new Date().toISOString();
+      setMyChatLinks((prev) =>
+        prev.map((c) => (c.id === chatId ? { ...c, lastReadAt: nowIso } : c)),
+      );
+      setNotifications((prev) =>
+        prev.map((n) => (n.chatId === chatId && !n.read ? { ...n, read: true } : n)),
+      );
+      void markChatRead(profile.id, chatId);
+    },
+    [profile],
+  );
+
+  // Mark active chat as read on chat open or when returning to tab
+  useEffect(() => {
+    if (!profile || !activeChatId || screen !== 'chat' || tabHidden) return;
+    handleChatViewed(activeChatId);
+  }, [profile, activeChatId, screen, tabHidden, handleChatViewed]);
+
+  // Auth listener
   useEffect(() => {
     const unsubscribe = subscribeToAuth(async (user) => {
       setFirebaseUser(user);
@@ -140,11 +333,19 @@ export default function App() {
 
       if (!user) {
         setProfile(null);
-        setChats([]);
+        setMyChatLinks([]);
+        setGroupMetaMap({});
         setBlocks([]);
+        setNotifications([]);
+        setNotificationToast(null);
         setActiveChatId(null);
         setViewedProfileUserId(null);
         setScreen('chat');
+        myChatsInitializedRef.current = false;
+        knownChatIdsRef.current.clear();
+        lastMsgTimestampByChatRef.current.clear();
+        notifiedKeysRef.current.clear();
+        seenJoinReqKeysRef.current.clear();
         return;
       }
 
@@ -153,7 +354,8 @@ export default function App() {
       try {
         const userProfile = await ensureUserProfile(user);
         setProfile(userProfile);
-        await loadWorkspaceData(user.uid);
+        const blockRows = await fetchBlocks(user.uid);
+        setBlocks(blockRows);
       } catch (err) {
         let message = err instanceof Error ? err.message : 'Unable to finish anonymous sign-in.';
         try {
@@ -170,7 +372,202 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [loadWorkspaceData]);
+  }, []);
+
+  // Real-time listener on user's myChats (DMs + joined groups)
+  useEffect(() => {
+    if (!profile) return;
+    setLoadingChats(true);
+    myChatsInitializedRef.current = false;
+    knownChatIdsRef.current.clear();
+
+    const unsub = subscribeToMyChats(profile.id, (incoming) => {
+      setMyChatLinks(incoming);
+      setLoadingChats(false);
+
+      if (!myChatsInitializedRef.current) {
+        myChatsInitializedRef.current = true;
+        for (const c of incoming) {
+          knownChatIdsRef.current.add(c.id);
+          if (c.lastMessageAt) {
+            lastMsgTimestampByChatRef.current.set(c.id, c.lastMessageAt);
+          }
+        }
+        return;
+      }
+
+      for (const c of incoming) {
+        const isNewlyAdded = !knownChatIdsRef.current.has(c.id);
+        knownChatIdsRef.current.add(c.id);
+
+        if (isNewlyAdded && c.type === 'group' && c.visibility === 'private') {
+          triggerNotification({
+            chatId: c.id,
+            kind: 'group_approved',
+            title: c.name ?? 'Private group',
+            body: 'Your request was approved — you can now chat here.',
+            createdAt: c.createdAt,
+          });
+        }
+
+        if (
+          c.type === 'dm' &&
+          c.lastMessageAt &&
+          c.lastSenderId &&
+          c.lastSenderId !== profile.id &&
+          !blockedIdsRef.current.has(c.lastSenderId)
+        ) {
+          const prevTs = lastMsgTimestampByChatRef.current.get(c.id);
+          if (c.lastMessageAt !== prevTs) {
+            lastMsgTimestampByChatRef.current.set(c.id, c.lastMessageAt);
+            triggerNotification({
+              chatId: c.id,
+              kind: 'message',
+              title: c.partner?.username ?? c.lastSenderUsername ?? 'Direct chat',
+              body: c.lastMessagePreview ?? 'Sent a message',
+              senderUsername: c.partner?.username ?? c.lastSenderUsername ?? undefined,
+              senderColor: c.partner?.color,
+              createdAt: c.lastMessageAt,
+            });
+          }
+        }
+      }
+    });
+
+    return () => unsub();
+  }, [profile, triggerNotification]);
+
+  // Real-time listener on joined groups for latest messages, member counts, and admin info
+  const joinedGroupIdsKey = useMemo(
+    () =>
+      myChatLinks
+        .filter((c) => c.type === 'group')
+        .map((c) => c.id)
+        .sort()
+        .join(','),
+    [myChatLinks],
+  );
+
+  useEffect(() => {
+    if (!profile || !joinedGroupIdsKey) return;
+    const groupIds = joinedGroupIdsKey.split(',').filter(Boolean);
+
+    const unsub = subscribeToGroupUpdates(groupIds, (chatId, update, isInitial) => {
+      setGroupMetaMap((prev) => ({
+        ...prev,
+        [chatId]: update,
+      }));
+
+      if (isInitial) {
+        if (update.lastMessageAt) {
+          lastMsgTimestampByChatRef.current.set(chatId, update.lastMessageAt);
+        }
+        return;
+      }
+
+      if (
+        update.lastMessageAt &&
+        update.lastSenderId &&
+        update.lastSenderId !== profile.id &&
+        !blockedIdsRef.current.has(update.lastSenderId)
+      ) {
+        const prevTs = lastMsgTimestampByChatRef.current.get(chatId);
+        if (update.lastMessageAt !== prevTs) {
+          lastMsgTimestampByChatRef.current.set(chatId, update.lastMessageAt);
+          const groupTitle = chatsRef.current.find((c) => c.id === chatId)?.name ?? 'Group';
+          const senderPrefix = update.lastSenderUsername ? `${update.lastSenderUsername}: ` : '';
+          triggerNotification({
+            chatId,
+            kind: 'message',
+            title: groupTitle,
+            body: `${senderPrefix}${update.lastMessagePreview ?? 'New message'}`,
+            senderUsername: update.lastSenderUsername ?? undefined,
+            createdAt: update.lastMessageAt,
+          });
+        }
+      }
+    });
+
+    return () => unsub();
+  }, [profile, joinedGroupIdsKey, triggerNotification]);
+
+  // Real-time listener for pending join requests on private groups owned by current user
+  const ownedPrivateGroupIdsKey = useMemo(
+    () =>
+      chats
+        .filter(
+          (c) =>
+            c.type === 'group' &&
+            c.visibility === 'private' &&
+            c.createdBy === profile?.id,
+        )
+        .map((c) => c.id)
+        .sort()
+        .join(','),
+    [chats, profile?.id],
+  );
+
+  useEffect(() => {
+    if (!profile || !ownedPrivateGroupIdsKey) return;
+    const groupIds = ownedPrivateGroupIdsKey.split(',').filter(Boolean);
+
+    const unsub = subscribeToAdminJoinRequests(groupIds, (chatId, requests, isInitial) => {
+      if (isInitial) {
+        for (const req of requests) {
+          seenJoinReqKeysRef.current.add(`${chatId}:${req.userId}:${req.createdAt}`);
+        }
+        return;
+      }
+
+      const groupName = chatsRef.current.find((c) => c.id === chatId)?.name ?? 'Private group';
+      for (const req of requests) {
+        const reqKey = `${chatId}:${req.userId}:${req.createdAt}`;
+        if (!seenJoinReqKeysRef.current.has(reqKey) && !blockedIdsRef.current.has(req.userId)) {
+          seenJoinReqKeysRef.current.add(reqKey);
+          triggerNotification({
+            chatId,
+            kind: 'join_request',
+            title: `Join request · ${groupName}`,
+            body: `${req.username} wants to join this private group.`,
+            senderUsername: req.username,
+            senderColor: req.color,
+            createdAt: req.createdAt,
+          });
+        }
+      }
+    });
+
+    return () => unsub();
+  }, [profile, ownedPrivateGroupIdsKey, triggerNotification]);
+
+  const unreadChatIds = useMemo(() => {
+    const set = new Set<string>();
+    if (!profile) return set;
+
+    for (const chat of chats) {
+      if (!chat.lastMessageAt) continue;
+      if (!chat.lastSenderId || chat.lastSenderId === profile.id) continue;
+      if (blockedUserIds.has(chat.lastSenderId)) continue;
+      if (chat.id === activeChatId && screen === 'chat' && !tabHidden) continue;
+
+      const msgMs = new Date(chat.lastMessageAt).getTime();
+      const readMs = chat.lastReadAt ? new Date(chat.lastReadAt).getTime() : 0;
+      if (msgMs > readMs) {
+        set.add(chat.id);
+      }
+    }
+    return set;
+  }, [chats, profile, blockedUserIds, activeChatId, screen, tabHidden]);
+
+  // Reflect unread badge in browser tab title
+  useEffect(() => {
+    const unreadNotifs = notifications.filter((n) => !n.read).length;
+    const count = Math.max(unreadChatIds.size, unreadNotifs);
+    document.title = count > 0 ? `(${count}) Buddy Chat` : BASE_TITLE;
+    return () => {
+      document.title = BASE_TITLE;
+    };
+  }, [unreadChatIds.size, notifications]);
 
   const handleSignIn = async () => {
     setAuthError(null);
@@ -198,7 +595,6 @@ export default function App() {
   ) => {
     if (!profile) return;
     const newChatId = await createGroup(profile, name, description, visibility);
-    await loadWorkspaceData(profile.id);
     setActiveChatId(newChatId);
     setScreen('chat');
   };
@@ -206,7 +602,6 @@ export default function App() {
   const handleJoinGroup = async (chatId: string) => {
     if (!profile) return;
     await joinGroup(profile, chatId);
-    await loadWorkspaceData(profile.id);
     setActiveChatId(chatId);
     setScreen('chat');
   };
@@ -215,13 +610,11 @@ export default function App() {
     if (!profile) return;
     await leaveGroup(profile.id, chatId);
     setActiveChatId((prev) => (prev === chatId ? null : prev));
-    await loadWorkspaceData(profile.id);
   };
 
   const handleStartDm = async (targetUserId: string) => {
     if (!profile) return;
     const dmChatId = await startDm(profile, targetUserId);
-    await loadWorkspaceData(profile.id);
     setActiveChatId(dmChatId);
     setScreen('chat');
   };
@@ -268,20 +661,19 @@ export default function App() {
     setToast('Report submitted. Thank you for helping keep rooms safe.');
   };
 
+  const handleOpenNotification = (notif: AppNotification) => {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === notif.id ? { ...n, read: true } : n)),
+    );
+    setNotificationToast(null);
+    setActiveChatId(notif.chatId);
+    setScreen('chat');
+  };
+
   const openProfilePage = (userId: string) => {
     setViewedProfileUserId(userId);
     setScreen('profile');
   };
-
-  const blockedUserIds = useMemo(
-    () => new Set(blocks.map((b) => b.blockedId)),
-    [blocks],
-  );
-
-  const activeChat = useMemo(
-    () => chats.find((c) => c.id === activeChatId) ?? null,
-    [chats, activeChatId],
-  );
 
   if (!authReady || (firebaseUser && bootstrapping && !profile)) {
     return (
@@ -320,7 +712,11 @@ export default function App() {
         profile={profile}
         blocks={blocks}
         themePreference={themePreference}
+        notificationSettings={notificationSettings}
+        browserNotifPermission={browserNotifPermission}
         onChangeTheme={setThemePreference}
+        onUpdateNotificationSettings={handleUpdateNotificationSettings}
+        onRequestBrowserPermission={handleRequestBrowserPermission}
         onRotateUsername={handleRotateUsername}
         onUnblock={handleUnblock}
         onOpenProfile={() => openProfilePage(profile.id)}
@@ -359,10 +755,17 @@ export default function App() {
             <Sidebar
               profile={profile}
               chats={chats}
+              unreadChatIds={unreadChatIds}
+              notifications={notifications}
               blockedUserIds={blockedUserIds}
               activeChatId={activeChatId}
               loadingChats={loadingChats}
               onSelectChat={(id) => setActiveChatId(id || null)}
+              onOpenNotification={handleOpenNotification}
+              onMarkAllNotificationsRead={() =>
+                setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))
+              }
+              onClearNotifications={() => setNotifications([])}
               onJoinGroup={handleJoinGroup}
               onStartDm={handleStartDm}
               onOpenCreateGroup={() => setCreateGroupOpen(true)}
@@ -382,6 +785,8 @@ export default function App() {
                 chat={activeChat}
                 currentUser={profile}
                 blockedUserIds={blockedUserIds}
+                typingEnabled={notificationSettings.typingIndicators}
+                onChatViewed={handleChatViewed}
                 onBackMobile={() => setActiveChatId(null)}
                 onLeaveGroup={handleLeaveGroup}
                 onStartDm={handleStartDm}
@@ -464,30 +869,40 @@ export default function App() {
                         Jump back into a recent chat
                       </p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        {chats.slice(0, 4).map((c) => (
-                          <button
-                            key={c.id}
-                            type="button"
-                            onClick={() => setActiveChatId(c.id)}
-                            className="p-3.5 rounded-xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] hover:border-indigo-500/40 flex items-center gap-3 text-left transition-colors"
-                          >
-                            <MessageSquare className="w-4 h-4 text-indigo-500 shrink-0" />
-                            <div className="min-w-0">
-                              <p className="text-sm font-semibold truncate">
-                                {c.type === 'dm'
-                                  ? c.partner?.username ?? 'Direct chat'
-                                  : c.name ?? 'Group'}
-                              </p>
-                              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                                {c.type === 'dm'
-                                  ? 'Direct chat'
-                                  : c.visibility === 'private'
-                                    ? 'Private group'
-                                    : 'Public group'}
-                              </p>
-                            </div>
-                          </button>
-                        ))}
+                        {chats.slice(0, 4).map((c) => {
+                          const hasUnread = unreadChatIds.has(c.id);
+                          return (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() => setActiveChatId(c.id)}
+                              className="p-3.5 rounded-xl bg-white dark:bg-[#111622] border border-slate-200 dark:border-white/[0.08] hover:border-indigo-500/40 flex items-center gap-3 text-left transition-colors"
+                            >
+                              <MessageSquare className="w-4 h-4 text-indigo-500 shrink-0" />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-sm font-semibold truncate">
+                                    {c.type === 'dm'
+                                      ? c.partner?.username ?? 'Direct chat'
+                                      : c.name ?? 'Group'}
+                                  </p>
+                                  {hasUnread && (
+                                    <span className="w-2 h-2 rounded-full bg-indigo-500 shrink-0" />
+                                  )}
+                                </div>
+                                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                                  {c.lastMessagePreview
+                                    ? c.lastMessagePreview
+                                    : c.type === 'dm'
+                                      ? 'Direct chat'
+                                      : c.visibility === 'private'
+                                        ? 'Private group'
+                                        : 'Public group'}
+                                </p>
+                              </div>
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   ) : (
@@ -521,6 +936,35 @@ export default function App() {
         onClose={() => setBlockTarget(null)}
         onConfirm={handleBlockConfirm}
       />
+
+      {notificationToast && (
+        <div
+          role="status"
+          className="fixed top-4 right-4 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-2xl bg-white dark:bg-[#161C2C] text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-white/[0.12] shadow-xl p-3 flex items-start gap-3 message-enter"
+        >
+          <div className="h-9 w-9 rounded-xl bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+            <Bell className="w-4 h-4" />
+          </div>
+          <button
+            type="button"
+            onClick={() => handleOpenNotification(notificationToast)}
+            className="min-w-0 flex-1 text-left"
+          >
+            <p className="text-xs font-semibold truncate">{notificationToast.title}</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mt-0.5">
+              {notificationToast.body}
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => setNotificationToast(null)}
+            aria-label="Dismiss notification"
+            className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {toast && (
         <div

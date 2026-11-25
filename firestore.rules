@@ -90,7 +90,7 @@ service cloud.firestore {
 
     function isValidUserChatLink(data, chatId) {
       return data.keys().hasAll(['chatId', 'type', 'name', 'description', 'partnerId', 'partnerUsername', 'partnerColor', 'joinedAt']) &&
-        data.keys().hasOnly(['chatId', 'type', 'visibility', 'name', 'description', 'partnerId', 'partnerUsername', 'partnerColor', 'joinedAt']) &&
+        data.keys().hasOnly(['chatId', 'type', 'visibility', 'name', 'description', 'partnerId', 'partnerUsername', 'partnerColor', 'lastMessageAt', 'lastMessagePreview', 'lastSenderId', 'lastSenderUsername', 'lastReadAt', 'joinedAt']) &&
         data.chatId is string && data.chatId == chatId &&
         data.type in ['dm', 'group'] &&
         (!('visibility' in data) || data.visibility in ['public', 'private']) &&
@@ -99,6 +99,11 @@ service cloud.firestore {
         (data.partnerId == null || isValidId(data.partnerId)) &&
         (data.partnerUsername == null || isValidUsername(data.partnerUsername)) &&
         (data.partnerColor == null || isValidHexColor(data.partnerColor)) &&
+        (!('lastMessageAt' in data) || data.lastMessageAt == null || data.lastMessageAt is timestamp) &&
+        (!('lastMessagePreview' in data) || data.lastMessagePreview == null || (data.lastMessagePreview is string && data.lastMessagePreview.size() <= 140)) &&
+        (!('lastSenderId' in data) || data.lastSenderId == null || isValidId(data.lastSenderId)) &&
+        (!('lastSenderUsername' in data) || data.lastSenderUsername == null || isValidUsername(data.lastSenderUsername)) &&
+        (!('lastReadAt' in data) || data.lastReadAt == null || data.lastReadAt is timestamp) &&
         data.joinedAt is timestamp;
     }
 
@@ -123,7 +128,7 @@ service cloud.firestore {
 
     function isValidChat(data) {
       return data.keys().hasAll(['type', 'name', 'description', 'dmKey', 'createdBy', 'memberCount', 'createdAt']) &&
-        data.keys().hasOnly(['type', 'visibility', 'name', 'description', 'dmKey', 'createdBy', 'memberCount', 'createdAt']) &&
+        data.keys().hasOnly(['type', 'visibility', 'name', 'description', 'dmKey', 'createdBy', 'memberCount', 'lastMessageAt', 'lastMessagePreview', 'lastSenderId', 'lastSenderUsername', 'createdAt']) &&
         data.type in ['dm', 'group'] &&
         (!('visibility' in data) || data.visibility in ['public', 'private']) &&
         (
@@ -133,6 +138,10 @@ service cloud.firestore {
         (data.description == null || (data.description is string && data.description.size() <= 200)) &&
         isValidId(data.createdBy) &&
         data.memberCount is int && data.memberCount >= 0 &&
+        (!('lastMessageAt' in data) || data.lastMessageAt == null || data.lastMessageAt is timestamp) &&
+        (!('lastMessagePreview' in data) || data.lastMessagePreview == null || (data.lastMessagePreview is string && data.lastMessagePreview.size() <= 140)) &&
+        (!('lastSenderId' in data) || data.lastSenderId == null || isValidId(data.lastSenderId)) &&
+        (!('lastSenderUsername' in data) || data.lastSenderUsername == null || isValidUsername(data.lastSenderUsername)) &&
         data.createdAt is timestamp;
     }
 
@@ -143,6 +152,16 @@ service cloud.firestore {
         isValidUsername(data.username) &&
         isValidHexColor(data.color) &&
         data.joinedAt is timestamp;
+    }
+
+    function isValidTypingState(data, userId) {
+      return data.keys().hasAll(['userId', 'username', 'color', 'isTyping', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'username', 'color', 'isTyping', 'updatedAt']) &&
+        data.userId is string && data.userId == userId &&
+        isValidUsername(data.username) &&
+        isValidHexColor(data.color) &&
+        data.isTyping is bool &&
+        data.updatedAt is timestamp;
     }
 
     function isValidJoinRequest(data, requesterId) {
@@ -290,8 +309,42 @@ service cloud.firestore {
             )
           );
 
+        allow update: if isSignedIn() &&
+          isValidId(userId) &&
+          isValidId(chatId) &&
+          isValidUserChatLink(incoming(), chatId) &&
+          incoming().chatId == existing().chatId &&
+          incoming().type == existing().type &&
+          incoming().joinedAt == existing().joinedAt &&
+          (
+            // Owner marks conversation as read
+            (
+              isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['lastReadAt']) &&
+              incoming().lastReadAt == request.time
+            ) ||
+            // Owner sends message and records latest preview + read state
+            (
+              isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['lastReadAt', 'lastMessageAt', 'lastMessagePreview', 'lastSenderId', 'lastSenderUsername']) &&
+              incoming().lastReadAt == request.time &&
+              incoming().lastMessageAt == request.time &&
+              incoming().lastSenderId == request.auth.uid
+            ) ||
+            // DM partner pushes latest message preview for recipient notification
+            (
+              existing().type == 'dm' &&
+              existing().partnerId == request.auth.uid &&
+              isChatMember(chatId) &&
+              !isUserBanned(request.auth.uid) &&
+              !exists(/databases/$(database)/documents/profiles/$(userId)/blocks/$(request.auth.uid)) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageAt', 'lastMessagePreview', 'lastSenderId', 'lastSenderUsername']) &&
+              incoming().lastSenderId == request.auth.uid &&
+              incoming().lastMessageAt == request.time
+            )
+          );
+
         allow delete: if isOwner(userId) && isValidId(chatId);
-        allow update: if false;
       }
 
       // User's block list
@@ -343,7 +396,7 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------------------
-    // Chats, Members, Join Requests, Messages, and Attachments
+    // Chats, Members, Typing, Join Requests, Messages, and Attachments
     // -------------------------------------------------------------------------
     match /chats/{chatId} {
       allow get: if isSignedIn() && isValidId(chatId) && (
@@ -368,7 +421,6 @@ service cloud.firestore {
       allow update: if isSignedIn() &&
         isValidId(chatId) &&
         isValidChat(incoming()) &&
-        existing().type == 'group' &&
         incoming().type == existing().type &&
         (!('visibility' in existing()) || incoming().visibility == existing().visibility) &&
         incoming().name == existing().name &&
@@ -376,10 +428,11 @@ service cloud.firestore {
         incoming().dmKey == existing().dmKey &&
         incoming().createdBy == existing().createdBy &&
         incoming().createdAt == existing().createdAt &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['memberCount']) &&
         (
           // Join public group directly
           (
+            existing().type == 'group' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['memberCount']) &&
             (!('visibility' in existing()) || existing().visibility == 'public') &&
             !isUserBanned(request.auth.uid) &&
             !exists(/databases/$(database)/documents/chats/$(chatId)/members/$(request.auth.uid)) &&
@@ -388,14 +441,27 @@ service cloud.firestore {
           ) ||
           // Admin approves private group member
           (
+            existing().type == 'group' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['memberCount']) &&
             existing().createdBy == request.auth.uid &&
             incoming().memberCount == existing().memberCount + 1
           ) ||
           // Leave group action
           (
+            existing().type == 'group' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['memberCount']) &&
             exists(/databases/$(database)/documents/chats/$(chatId)/members/$(request.auth.uid)) &&
             !existsAfter(/databases/$(database)/documents/chats/$(chatId)/members/$(request.auth.uid)) &&
             incoming().memberCount == existing().memberCount - 1
+          ) ||
+          // Member sends a message and updates latest message preview for notifications
+          (
+            isChatMember(chatId) &&
+            !isUserBanned(request.auth.uid) &&
+            incoming().memberCount == existing().memberCount &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageAt', 'lastMessagePreview', 'lastSenderId', 'lastSenderUsername']) &&
+            incoming().lastMessageAt == request.time &&
+            incoming().lastSenderId == request.auth.uid
           )
         );
 
@@ -456,6 +522,20 @@ service cloud.firestore {
           get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group';
 
         allow update: if false;
+      }
+
+      match /typing/{userId} {
+        allow get, list: if isSignedIn() && isChatMember(chatId);
+
+        allow create, update: if isOwner(userId) &&
+          isValidId(chatId) &&
+          isValidId(userId) &&
+          isValidTypingState(incoming(), userId) &&
+          incoming().updatedAt == request.time &&
+          isChatMember(chatId) &&
+          !isUserBanned(userId);
+
+        allow delete: if isOwner(userId) && isValidId(chatId) && isValidId(userId);
       }
 
       match /joinRequests/{requesterId} {

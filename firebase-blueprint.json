@@ -19,7 +19,7 @@
     },
     "UserChatLink": {
       "title": "UserChatLink",
-      "description": "User-scoped index of joined groups and direct message conversations.",
+      "description": "User-scoped index of joined groups and direct message conversations, with unread/last-message tracking.",
       "type": "object",
       "properties": {
         "chatId": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -30,6 +30,11 @@
         "partnerId": { "type": "string", "maxLength": 128 },
         "partnerUsername": { "type": "string", "maxLength": 32 },
         "partnerColor": { "type": "string", "maxLength": 7 },
+        "lastMessageAt": { "type": "string", "format": "date-time" },
+        "lastMessagePreview": { "type": "string", "maxLength": 140 },
+        "lastSenderId": { "type": "string", "maxLength": 128 },
+        "lastSenderUsername": { "type": "string", "maxLength": 32 },
+        "lastReadAt": { "type": "string", "format": "date-time" },
         "joinedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["chatId", "type", "joinedAt"]
@@ -71,6 +76,10 @@
         "dmKey": { "type": "string", "maxLength": 260 },
         "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
         "memberCount": { "type": "integer" },
+        "lastMessageAt": { "type": "string", "format": "date-time" },
+        "lastMessagePreview": { "type": "string", "maxLength": 140 },
+        "lastSenderId": { "type": "string", "maxLength": 128 },
+        "lastSenderUsername": { "type": "string", "maxLength": 32 },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["type", "createdBy", "memberCount", "createdAt"]
@@ -86,6 +95,19 @@
         "joinedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "username", "color", "joinedAt"]
+    },
+    "TypingState": {
+      "title": "TypingState",
+      "description": "Real-time typing indicator state for a chat member.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "username": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "color": { "type": "string", "minLength": 7, "maxLength": 7 },
+        "isTyping": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "username", "color", "isTyping", "updatedAt"]
     },
     "JoinRequest": {
       "title": "JoinRequest",
@@ -162,7 +184,7 @@
     },
     "/profiles/{userId}/myChats/{chatId}": {
       "schema": { "$ref": "#/entities/UserChatLink" },
-      "description": "Per-user list of joined groups and DM rooms."
+      "description": "Per-user list of joined groups and DM rooms with last-message and read state."
     },
     "/profiles/{userId}/blocks/{blockedUserId}": {
       "schema": { "$ref": "#/entities/BlockRecord" },
@@ -174,11 +196,15 @@
     },
     "/chats/{chatId}": {
       "schema": { "$ref": "#/entities/Chat" },
-      "description": "Public/private group and direct-message room metadata."
+      "description": "Public/private group and direct-message room metadata and latest activity."
     },
     "/chats/{chatId}/members/{memberId}": {
       "schema": { "$ref": "#/entities/ChatMember" },
       "description": "Subcollection of members belonging to a chat."
+    },
+    "/chats/{chatId}/typing/{userId}": {
+      "schema": { "$ref": "#/entities/TypingState" },
+      "description": "Ephemeral typing indicator state per member inside a chat."
     },
     "/chats/{chatId}/joinRequests/{requesterId}": {
       "schema": { "$ref": "#/entities/JoinRequest" },

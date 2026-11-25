@@ -31,6 +31,7 @@ import type {
   JoinRequest,
   JoinRequestStatus,
   Profile,
+  TypingParticipant,
   UsernameHistoryEntry,
 } from '../types';
 
@@ -297,6 +298,38 @@ export async function updateOwnProfile(
   }
 }
 
+function mapUserChatDoc(docSnap: QueryDocumentSnapshot<DocumentData>): ChatSummary {
+  const data = docSnap.data();
+  const type = data.type === 'dm' ? ('dm' as const) : ('group' as const);
+  const visibility: GroupVisibility = data.visibility === 'private' ? 'private' : 'public';
+  return {
+    id: docSnap.id,
+    type,
+    visibility,
+    name: data.name ? String(data.name) : null,
+    description: data.description ? String(data.description) : null,
+    createdAt: toIso(data.joinedAt),
+    lastMessageAt: toNullableIso(data.lastMessageAt),
+    lastMessagePreview: data.lastMessagePreview ? String(data.lastMessagePreview) : null,
+    lastSenderId: data.lastSenderId ? String(data.lastSenderId) : null,
+    lastSenderUsername: data.lastSenderUsername ? String(data.lastSenderUsername) : null,
+    lastReadAt: toNullableIso(data.lastReadAt),
+    partner:
+      type === 'dm' && data.partnerId
+        ? {
+            id: String(data.partnerId),
+            username: String(data.partnerUsername ?? 'Anonymous'),
+            color: String(data.partnerColor ?? '#6366F1'),
+            bio: '',
+            avatarUrl: null,
+            usernameHistory: [],
+            banned: false,
+            lastUsernameChangeAt: null,
+          }
+        : null,
+  };
+}
+
 export async function fetchMyChats(uid: string): Promise<ChatSummary[]> {
   const db = getFirestoreDb();
   const path = `profiles/${uid}/myChats`;
@@ -304,32 +337,7 @@ export async function fetchMyChats(uid: string): Promise<ChatSummary[]> {
     const q = query(collection(db, 'profiles', uid, 'myChats'), orderBy('joinedAt', 'desc'));
     const snap = await getDocs(q);
 
-    const baseChats: ChatSummary[] = snap.docs.map((docSnap) => {
-      const data = docSnap.data();
-      const type = data.type === 'dm' ? ('dm' as const) : ('group' as const);
-      const visibility: GroupVisibility = data.visibility === 'private' ? 'private' : 'public';
-      return {
-        id: docSnap.id,
-        type,
-        visibility,
-        name: data.name ? String(data.name) : null,
-        description: data.description ? String(data.description) : null,
-        createdAt: toIso(data.joinedAt),
-        partner:
-          type === 'dm' && data.partnerId
-            ? {
-                id: String(data.partnerId),
-                username: String(data.partnerUsername ?? 'Anonymous'),
-                color: String(data.partnerColor ?? '#6366F1'),
-                bio: '',
-                avatarUrl: null,
-                usernameHistory: [],
-                banned: false,
-                lastUsernameChangeAt: null,
-              }
-            : null,
-      };
-    });
+    const baseChats: ChatSummary[] = snap.docs.map(mapUserChatDoc);
 
     const partnerIds = baseChats
       .map((c) => c.partner?.id)
@@ -346,6 +354,151 @@ export async function fetchMyChats(uid: string): Promise<ChatSummary[]> {
     return baseChats;
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
+export function subscribeToMyChats(
+  uid: string,
+  onChats: (chats: ChatSummary[]) => void,
+): () => void {
+  const db = getFirestoreDb();
+  const path = `profiles/${uid}/myChats`;
+  const partnerCache = new Map<string, Profile>();
+  const q = query(collection(db, 'profiles', uid, 'myChats'), orderBy('joinedAt', 'desc'));
+
+  return onSnapshot(
+    q,
+    async (snap) => {
+      const baseChats: ChatSummary[] = snap.docs.map(mapUserChatDoc);
+      const missingPartnerIds = baseChats
+        .map((c) => c.partner?.id)
+        .filter((id): id is string => Boolean(id))
+        .filter((id) => !partnerCache.has(id));
+
+      if (missingPartnerIds.length > 0) {
+        try {
+          const fetched = await fetchProfilesMap(missingPartnerIds);
+          for (const [id, prof] of Object.entries(fetched)) {
+            partnerCache.set(id, prof);
+          }
+        } catch {
+          // keep fallback partner info from myChats
+        }
+      }
+
+      for (const chat of baseChats) {
+        if (chat.partner && partnerCache.has(chat.partner.id)) {
+          chat.partner = partnerCache.get(chat.partner.id)!;
+        }
+      }
+
+      onChats(baseChats);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    },
+  );
+}
+
+export function subscribeToGroupUpdates(
+  groupIds: string[],
+  onGroupUpdate: (
+    chatId: string,
+    update: {
+      createdBy: string | null;
+      visibility: GroupVisibility;
+      memberCount: number;
+      lastMessageAt: string | null;
+      lastMessagePreview: string | null;
+      lastSenderId: string | null;
+      lastSenderUsername: string | null;
+    },
+    isInitialSnapshot: boolean,
+  ) => void,
+): () => void {
+  const db = getFirestoreDb();
+  const unsubs = groupIds.slice(0, 25).map((chatId) => {
+    let firstSnap = true;
+    return onSnapshot(
+      doc(db, 'chats', chatId),
+      (snap) => {
+        if (!snap.exists()) return;
+        const data = snap.data();
+        const isInitial = firstSnap;
+        firstSnap = false;
+        onGroupUpdate(
+          chatId,
+          {
+            createdBy: data.createdBy ? String(data.createdBy) : null,
+            visibility: data.visibility === 'private' ? 'private' : 'public',
+            memberCount: typeof data.memberCount === 'number' ? data.memberCount : 1,
+            lastMessageAt: toNullableIso(data.lastMessageAt),
+            lastMessagePreview: data.lastMessagePreview ? String(data.lastMessagePreview) : null,
+            lastSenderId: data.lastSenderId ? String(data.lastSenderId) : null,
+            lastSenderUsername: data.lastSenderUsername ? String(data.lastSenderUsername) : null,
+          },
+          isInitial,
+        );
+      },
+      () => {
+        // Ignore transient permission errors if user just left a group
+      },
+    );
+  });
+
+  return () => {
+    for (const unsub of unsubs) unsub();
+  };
+}
+
+export function subscribeToAdminJoinRequests(
+  groupIds: string[],
+  onPendingUpdate: (chatId: string, requests: JoinRequest[], isInitial: boolean) => void,
+): () => void {
+  const db = getFirestoreDb();
+  const unsubs = groupIds.slice(0, 15).map((chatId) => {
+    let firstSnap = true;
+    const q = query(
+      collection(db, 'chats', chatId, 'joinRequests'),
+      where('status', '==', 'pending'),
+    );
+    return onSnapshot(
+      q,
+      (snap) => {
+        const isInitial = firstSnap;
+        firstSnap = false;
+        const reqs: JoinRequest[] = snap.docs.map((docSnap) => {
+          const data = docSnap.data();
+          return {
+            userId: String(data.userId ?? docSnap.id),
+            username: String(data.username ?? 'Anonymous'),
+            color: String(data.color ?? '#6366F1'),
+            status: 'pending',
+            createdAt: toIso(data.createdAt),
+            updatedAt: toIso(data.updatedAt),
+          };
+        });
+        onPendingUpdate(chatId, reqs, isInitial);
+      },
+      () => {
+        // ignore non-admin or removed room errors
+      },
+    );
+  });
+
+  return () => {
+    for (const unsub of unsubs) unsub();
+  };
+}
+
+export async function markChatRead(uid: string, chatId: string): Promise<void> {
+  const db = getFirestoreDb();
+  try {
+    await updateDoc(doc(db, 'profiles', uid, 'myChats', chatId), {
+      lastReadAt: serverTimestamp(),
+    });
+  } catch {
+    // Ignore if chat link was removed
   }
 }
 
@@ -962,6 +1115,7 @@ export async function sendMessage(
   profile: Profile,
   body: string,
   attachmentInput?: { file: File; kind: AttachmentKind },
+  dmPartnerId?: string | null,
 ): Promise<void> {
   const db = getFirestoreDb();
   const msgRef = doc(collection(db, 'chats', chatId, 'messages'));
@@ -1049,6 +1203,19 @@ export async function sendMessage(
     };
   }
 
+  const trimmedBody = body.trim();
+  const previewText = (
+    trimmedBody
+      ? trimmedBody
+      : attachmentMeta?.kind === 'view_once_photo'
+        ? 'Sent a view-once photo'
+        : attachmentMeta?.kind === 'photo'
+          ? 'Sent a photo'
+          : attachmentMeta
+            ? `Sent file: ${attachmentMeta.fileName}`
+            : ''
+  ).slice(0, 140);
+
   const batch = writeBatch(db);
   batch.set(msgRef, {
     senderId: profile.id,
@@ -1065,12 +1232,90 @@ export async function sendMessage(
     count: nextCount,
     lastMessageId: msgRef.id,
   });
+  batch.update(doc(db, 'chats', chatId), {
+    lastMessageAt: serverTimestamp(),
+    lastMessagePreview: previewText,
+    lastSenderId: profile.id,
+    lastSenderUsername: profile.username,
+  });
 
   try {
     await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
+
+  // Best-effort notification preview updates on sender + DM recipient myChats links
+  const myChatUpdate = updateDoc(doc(db, 'profiles', profile.id, 'myChats', chatId), {
+    lastReadAt: serverTimestamp(),
+    lastMessageAt: serverTimestamp(),
+    lastMessagePreview: previewText,
+    lastSenderId: profile.id,
+    lastSenderUsername: profile.username,
+  });
+
+  if (dmPartnerId) {
+    const partnerUpdate = updateDoc(doc(db, 'profiles', dmPartnerId, 'myChats', chatId), {
+      lastMessageAt: serverTimestamp(),
+      lastMessagePreview: previewText,
+      lastSenderId: profile.id,
+      lastSenderUsername: profile.username,
+    });
+    await Promise.allSettled([myChatUpdate, partnerUpdate]);
+  } else {
+    await Promise.allSettled([myChatUpdate]);
+  }
+}
+
+export async function setTypingStatus(
+  chatId: string,
+  profile: Profile,
+  isTyping: boolean,
+): Promise<void> {
+  const db = getFirestoreDb();
+  const ref = doc(db, 'chats', chatId, 'typing', profile.id);
+  try {
+    if (isTyping) {
+      await setDoc(ref, {
+        userId: profile.id,
+        username: profile.username,
+        color: profile.color,
+        isTyping: true,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await deleteDoc(ref);
+    }
+  } catch {
+    // Non-critical ephemeral typing status; ignore transient network/leave errors
+  }
+}
+
+export function subscribeToTyping(
+  chatId: string,
+  onTypingUsers: (participants: TypingParticipant[]) => void,
+): () => void {
+  const db = getFirestoreDb();
+  const q = collection(db, 'chats', chatId, 'typing');
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const list: TypingParticipant[] = snapshot.docs.map((docSnap) => {
+        const data = docSnap.data();
+        return {
+          userId: String(data.userId ?? docSnap.id),
+          username: String(data.username ?? 'Anonymous'),
+          color: String(data.color ?? '#6366F1'),
+          isTyping: Boolean(data.isTyping),
+          updatedAt: toIso(data.updatedAt),
+        };
+      });
+      onTypingUsers(list);
+    },
+    () => {
+      onTypingUsers([]);
+    },
+  );
 }
 
 export async function fetchAttachmentBlobUrl(
