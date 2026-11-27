@@ -16,6 +16,7 @@ import {
   Plus,
   Search,
   Settings,
+  ShieldCheck,
   Star,
   Trash2,
   User,
@@ -75,6 +76,8 @@ interface SidebarProps {
   onOpenCreateGroup: () => void;
   onOpenProfile: (userId: string) => void;
   onOpenSettings: () => void;
+  isStaff?: boolean;
+  onOpenAdmin?: () => void;
   onToast: (message: string) => void;
 }
 
@@ -116,6 +119,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenCreateGroup,
   onOpenProfile,
   onOpenSettings,
+  isStaff,
+  onOpenAdmin,
   onToast,
 }) => {
   const [tab, setTab] = useState<'chats' | 'browse'>('chats');
@@ -572,6 +577,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
             )}
           </div>
+
+          {isStaff && onOpenAdmin && (
+            <button
+              type="button"
+              onClick={onOpenAdmin}
+              aria-label="Open Admin Console"
+              title="Admin & Moderation Console"
+              className="min-h-[40px] min-w-[40px] rounded-full text-[#2B84F6] hover:bg-[#2B84F6]/12 flex items-center justify-center transition-colors"
+            >
+              <ShieldCheck className="w-5 h-5" />
+            </button>
+          )}
 
           <button
             type="button"

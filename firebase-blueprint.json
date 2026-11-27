@@ -2,7 +2,7 @@
   "entities": {
     "Profile": {
       "title": "Profile",
-      "description": "Anonymous user profile with avatar, bio, and username change history (no email, name, or Google photo).",
+      "description": "Anonymous user profile with avatar, bio, moderation ban status, and username change history (no email, name, or Google photo).",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -12,10 +12,107 @@
         "avatarUrl": { "type": "string", "maxLength": 220000 },
         "usernameHistory": { "type": "array" },
         "banned": { "type": "boolean" },
+        "bannedReason": { "type": "string", "maxLength": 240 },
+        "bannedAt": { "type": "string", "format": "date-time" },
         "lastUsernameChangeAt": { "type": "string", "format": "date-time" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "username", "color", "banned", "lastUsernameChangeAt", "createdAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Delegated platform Super Admin record granted by primary owner.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "username": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[A-Za-z0-9_]+$" },
+        "color": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "addedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "addedByUsername": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "note": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "username", "color", "addedBy", "addedByUsername", "createdAt"]
+    },
+    "ModeratorRecord": {
+      "title": "ModeratorRecord",
+      "description": "Platform Moderator role assignment with granular permissions granted by Super Admin.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "username": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[A-Za-z0-9_]+$" },
+        "color": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "canBan": { "type": "boolean" },
+        "canManageReports": { "type": "boolean" },
+        "canManageRooms": { "type": "boolean" },
+        "note": { "type": "string", "maxLength": 200 },
+        "addedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "addedByUsername": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "username", "color", "canBan", "canManageReports", "canManageRooms", "addedBy", "addedByUsername", "createdAt"]
+    },
+    "DeletedUserRecord": {
+      "title": "DeletedUserRecord",
+      "description": "Tombstone record preventing a permanently removed user UID from silently recreating an account unless restored by Super Admin.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "username": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "reason": { "type": "string", "maxLength": 240 },
+        "deletedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "deletedByUsername": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "deletedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "username", "deletedBy", "deletedByUsername", "deletedAt"]
+    },
+    "UserActivity": {
+      "title": "UserActivity",
+      "description": "Privacy-safe user telemetry for platform activity tracking (session counts, message counts, last seen).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "lastSeenAt": { "type": "string", "format": "date-time" },
+        "sessionCount": { "type": "integer" },
+        "messagesSentCount": { "type": "integer" },
+        "lastScreen": { "type": "string", "enum": ["chat", "profile", "settings", "terms", "admin"] }
+      },
+      "required": ["uid", "lastSeenAt", "sessionCount", "messagesSentCount", "lastScreen"]
+    },
+    "ModerationLog": {
+      "title": "ModerationLog",
+      "description": "Immutable audit trail of admin and moderator actions across the platform.",
+      "type": "object",
+      "properties": {
+        "actorId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorUsername": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "actorRole": { "type": "string", "enum": ["admin", "moderator"] },
+        "action": {
+          "type": "string",
+          "enum": [
+            "ban_user",
+            "unban_user",
+            "delete_user",
+            "restore_user",
+            "add_moderator",
+            "update_moderator",
+            "remove_moderator",
+            "add_admin",
+            "remove_admin",
+            "resolve_report",
+            "dismiss_report",
+            "reset_profile",
+            "reset_ratelimit",
+            "delete_room"
+          ]
+        },
+        "targetUserId": { "type": "string", "maxLength": 128 },
+        "targetUsername": { "type": "string", "maxLength": 32 },
+        "targetChatId": { "type": "string", "maxLength": 128 },
+        "details": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorId", "actorUsername", "actorRole", "action", "details", "createdAt"]
     },
     "UserChatLink": {
       "title": "UserChatLink",
@@ -220,7 +317,7 @@
     },
     "Report": {
       "title": "Report",
-      "description": "Abuse report submitted by an authenticated user.",
+      "description": "Abuse report submitted by an authenticated user with moderation resolution state.",
       "type": "object",
       "properties": {
         "reporterId": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -228,12 +325,37 @@
         "chatId": { "type": "string", "maxLength": 128 },
         "messageId": { "type": "string", "maxLength": 128 },
         "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "status": { "type": "string", "enum": ["pending", "resolved", "dismissed"] },
+        "resolvedBy": { "type": "string", "maxLength": 128 },
+        "resolvedByUsername": { "type": "string", "maxLength": 32 },
+        "resolutionNote": { "type": "string", "maxLength": 300 },
+        "resolvedAt": { "type": "string", "format": "date-time" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["reporterId", "reason", "createdAt"]
+      "required": ["reporterId", "reason", "status", "createdAt"]
     }
   },
   "firestore": {
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Delegated Super Admin role assignments."
+    },
+    "/moderators/{userId}": {
+      "schema": { "$ref": "#/entities/ModeratorRecord" },
+      "description": "Moderator role assignments with granular capability flags."
+    },
+    "/deletedUsers/{userId}": {
+      "schema": { "$ref": "#/entities/DeletedUserRecord" },
+      "description": "Tombstone records for users removed by Super Admins."
+    },
+    "/userActivity/{userId}": {
+      "schema": { "$ref": "#/entities/UserActivity" },
+      "description": "Per-user activity tracking (last seen, session count, message count)."
+    },
+    "/moderationLogs/{logId}": {
+      "schema": { "$ref": "#/entities/ModerationLog" },
+      "description": "Immutable admin and moderator action audit trail."
+    },
     "/profiles/{userId}": {
       "schema": { "$ref": "#/entities/Profile" },
       "description": "Anonymous user profiles keyed by Firebase Auth UID."
@@ -296,7 +418,7 @@
     },
     "/reports/{reportId}": {
       "schema": { "$ref": "#/entities/Report" },
-      "description": "User moderation reports (write-only for regular users)."
+      "description": "User moderation reports and triage states."
     }
   }
 }

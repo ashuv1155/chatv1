@@ -8,6 +8,7 @@ import {
   getCountFromServer,
   getDoc,
   getDocs,
+  increment,
   limit,
   onSnapshot,
   orderBy,
@@ -27,21 +28,33 @@ import {
   handleFirestoreError,
 } from './firebase';
 import type {
+  AdminChatRoomSummary,
+  AdminRecord,
+  AppScreen,
   AttachmentKind,
   AttachmentMeta,
   BlockEntry,
   ChatMessage,
   ChatReadReceipt,
   ChatSummary,
+  DeletedUserRecord,
   FavoriteEntry,
   GroupSearchResult,
   GroupVisibility,
   JoinRequest,
   JoinRequestStatus,
   MessageReaction,
+  ModerationActionType,
+  ModerationLog,
+  ModeratorRecord,
   Profile,
   ReplyMeta,
+  ReportEntry,
+  ReportStatus,
+  StaffAccess,
   TypingParticipant,
+  UserActivity,
+  UserTrackingDetails,
   UsernameHistoryEntry,
 } from '../types';
 
@@ -131,6 +144,8 @@ function mapProfileData(uid: string, data: DocumentData): Profile {
     avatarUrl: typeof data.avatarUrl === 'string' && data.avatarUrl.startsWith('data:image/') ? data.avatarUrl : null,
     usernameHistory: parseUsernameHistory(data.usernameHistory),
     banned: Boolean(data.banned),
+    bannedReason: typeof data.bannedReason === 'string' ? data.bannedReason : null,
+    bannedAt: toNullableIso(data.bannedAt),
     lastUsernameChangeAt: toNullableIso(data.lastUsernameChangeAt),
     createdAt: toIso(data.createdAt),
   };
@@ -1504,6 +1519,8 @@ export async function sendMessage(
   } else {
     await Promise.allSettled([myChatUpdate]);
   }
+
+  void recordUserActivity(profile.id, 'chat', { incrementMessages: true });
 }
 
 export async function setTypingStatus(
@@ -2002,6 +2019,7 @@ export async function submitReport(params: {
       chatId: params.chatId ?? null,
       messageId: params.messageId ?? null,
       reason: params.reason.trim(),
+      status: 'pending',
       createdAt: serverTimestamp(),
     });
   } catch (error) {
@@ -2120,8 +2138,11 @@ export async function deleteOwnAccount(uid: string): Promise<void> {
     await batch.commit();
   }
 
-  // 3. Clean up rate limit state & anonymous profile document
-  await Promise.allSettled([deleteDoc(doc(db, 'rateLimits', uid))]);
+  // 3. Clean up rate limit state, userActivity & anonymous profile document
+  await Promise.allSettled([
+    deleteDoc(doc(db, 'rateLimits', uid)),
+    deleteDoc(doc(db, 'userActivity', uid)),
+  ]);
   try {
     await deleteDoc(doc(db, 'profiles', uid));
   } catch (error) {
@@ -2131,3 +2152,915 @@ export async function deleteOwnAccount(uid: string): Promise<void> {
   // 4. Delete Firebase Auth account (may trigger Google re-authentication if session is old)
   await deleteCurrentAuthUser();
 }
+
+// ---------------------------------------------------------------------------
+// Platform Administration, Moderation & Activity Tracking
+// ---------------------------------------------------------------------------
+
+export const PRIMARY_ADMIN_EMAIL = '8887ashu@gmail.com';
+
+export function isPrimaryOwnerUser(user: User | null | undefined): boolean {
+  if (!user || !user.email || !user.emailVerified) return false;
+  return user.email.trim().toLowerCase() === PRIMARY_ADMIN_EMAIL;
+}
+
+export const DEFAULT_USER_STAFF_ACCESS: StaffAccess = {
+  role: 'user',
+  isPrimaryOwner: false,
+  isAdmin: false,
+  isModerator: false,
+  isStaff: false,
+  canBan: false,
+  canManageReports: false,
+  canManageRooms: false,
+  canManageStaff: false,
+  canDeleteUsers: false,
+};
+
+export async function ensurePrimaryOwnerAdminRecord(user: User, profile: Profile): Promise<void> {
+  if (!isPrimaryOwnerUser(user)) return;
+  const db = getFirestoreDb();
+  const ref = doc(db, 'admins', user.uid);
+  try {
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        uid: user.uid,
+        username: profile.username,
+        color: profile.color,
+        addedBy: user.uid,
+        addedByUsername: profile.username,
+        note: 'Primary Platform Owner',
+        createdAt: serverTimestamp(),
+      });
+    }
+  } catch {
+    // Non-blocking best-effort registration
+  }
+}
+
+export async function fetchStaffAccess(user: User): Promise<StaffAccess> {
+  const isPrimaryOwner = isPrimaryOwnerUser(user);
+  if (isPrimaryOwner) {
+    return {
+      role: 'admin',
+      isPrimaryOwner: true,
+      isAdmin: true,
+      isModerator: false,
+      isStaff: true,
+      canBan: true,
+      canManageReports: true,
+      canManageRooms: true,
+      canManageStaff: true,
+      canDeleteUsers: true,
+    };
+  }
+
+  const db = getFirestoreDb();
+  try {
+    const adminSnap = await getDoc(doc(db, 'admins', user.uid));
+    if (adminSnap.exists()) {
+      return {
+        role: 'admin',
+        isPrimaryOwner: false,
+        isAdmin: true,
+        isModerator: false,
+        isStaff: true,
+        canBan: true,
+        canManageReports: true,
+        canManageRooms: true,
+        canManageStaff: true,
+        canDeleteUsers: true,
+      };
+    }
+
+    const modSnap = await getDoc(doc(db, 'moderators', user.uid));
+    if (modSnap.exists()) {
+      const data = modSnap.data();
+      return {
+        role: 'moderator',
+        isPrimaryOwner: false,
+        isAdmin: false,
+        isModerator: true,
+        isStaff: true,
+        canBan: Boolean(data.canBan),
+        canManageReports: Boolean(data.canManageReports),
+        canManageRooms: Boolean(data.canManageRooms),
+        canManageStaff: false,
+        canDeleteUsers: false,
+      };
+    }
+  } catch {
+    return DEFAULT_USER_STAFF_ACCESS;
+  }
+
+  return DEFAULT_USER_STAFF_ACCESS;
+}
+
+export async function fetchDeletedUserRecord(uid: string): Promise<DeletedUserRecord | null> {
+  const db = getFirestoreDb();
+  try {
+    const snap = await getDoc(doc(db, 'deletedUsers', uid));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    return {
+      uid: String(data.uid ?? snap.id),
+      username: String(data.username ?? 'DeletedUser'),
+      reason: typeof data.reason === 'string' ? data.reason : null,
+      deletedBy: String(data.deletedBy ?? ''),
+      deletedByUsername: String(data.deletedByUsername ?? 'Admin'),
+      deletedAt: toIso(data.deletedAt),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function recordUserActivity(
+  uid: string,
+  screen: AppScreen,
+  options?: { newSession?: boolean; incrementMessages?: boolean },
+): Promise<void> {
+  if (!uid) return;
+  const db = getFirestoreDb();
+  const ref = doc(db, 'userActivity', uid);
+  try {
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        uid,
+        lastSeenAt: serverTimestamp(),
+        sessionCount: 1,
+        messagesSentCount: options?.incrementMessages ? 1 : 0,
+        lastScreen: screen,
+      });
+    } else {
+      const payload: Record<string, unknown> = {
+        lastSeenAt: serverTimestamp(),
+        lastScreen: screen,
+      };
+      if (options?.newSession) {
+        payload.sessionCount = increment(1);
+      }
+      if (options?.incrementMessages) {
+        payload.messagesSentCount = increment(1);
+      }
+      await updateDoc(ref, payload);
+    }
+  } catch {
+    // Telemetry is best-effort and never blocks user messaging or navigation
+  }
+}
+
+async function writeModerationLog(params: {
+  actor: Profile;
+  actorRole: 'admin' | 'moderator';
+  action: ModerationActionType;
+  targetUserId?: string | null;
+  targetUsername?: string | null;
+  targetChatId?: string | null;
+  details: string;
+}): Promise<void> {
+  const db = getFirestoreDb();
+  const logRef = doc(collection(db, 'moderationLogs'));
+  const path = `moderationLogs/${logRef.id}`;
+  try {
+    await setDoc(logRef, {
+      actorId: params.actor.id,
+      actorUsername: params.actor.username,
+      actorRole: params.actorRole,
+      action: params.action,
+      targetUserId: params.targetUserId ?? null,
+      targetUsername: params.targetUsername ?? null,
+      targetChatId: params.targetChatId ?? null,
+      details: params.details.trim().slice(0, 300),
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export interface AdminDashboardSnapshot {
+  profiles: Profile[];
+  admins: AdminRecord[];
+  moderators: ModeratorRecord[];
+  deletedUsers: DeletedUserRecord[];
+  activities: Record<string, UserActivity>;
+  reports: ReportEntry[];
+  chats: AdminChatRoomSummary[];
+  logs: ModerationLog[];
+}
+
+export async function fetchAdminDashboardData(): Promise<AdminDashboardSnapshot> {
+  const db = getFirestoreDb();
+
+  const [
+    profilesSnap,
+    adminsSnap,
+    modsSnap,
+    deletedSnap,
+    activitySnap,
+    reportsSnap,
+    chatsSnap,
+    logsSnap,
+  ] = await Promise.all([
+    getDocs(query(collection(db, 'profiles'), limit(500))).catch((err) =>
+      handleFirestoreError(err, OperationType.LIST, 'profiles'),
+    ),
+    getDocs(collection(db, 'admins')).catch((err) =>
+      handleFirestoreError(err, OperationType.LIST, 'admins'),
+    ),
+    getDocs(collection(db, 'moderators')).catch((err) =>
+      handleFirestoreError(err, OperationType.LIST, 'moderators'),
+    ),
+    getDocs(collection(db, 'deletedUsers')).catch((err) =>
+      handleFirestoreError(err, OperationType.LIST, 'deletedUsers'),
+    ),
+    getDocs(query(collection(db, 'userActivity'), limit(500))).catch((err) =>
+      handleFirestoreError(err, OperationType.LIST, 'userActivity'),
+    ),
+    getDocs(query(collection(db, 'reports'), orderBy('createdAt', 'desc'), limit(200))).catch((err) =>
+      handleFirestoreError(err, OperationType.LIST, 'reports'),
+    ),
+    getDocs(query(collection(db, 'chats'), limit(400))).catch((err) =>
+      handleFirestoreError(err, OperationType.LIST, 'chats'),
+    ),
+    getDocs(query(collection(db, 'moderationLogs'), orderBy('createdAt', 'desc'), limit(200))).catch((err) =>
+      handleFirestoreError(err, OperationType.LIST, 'moderationLogs'),
+    ),
+  ]);
+
+  const profiles = profilesSnap.docs
+    .map((d) => mapProfileData(d.id, d.data()))
+    .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
+
+  const admins: AdminRecord[] = adminsSnap.docs.map((d) => {
+    const data = d.data();
+    return {
+      uid: String(data.uid ?? d.id),
+      username: String(data.username ?? 'Admin'),
+      color: String(data.color ?? '#6366F1'),
+      addedBy: String(data.addedBy ?? ''),
+      addedByUsername: String(data.addedByUsername ?? 'Owner'),
+      note: typeof data.note === 'string' ? data.note : null,
+      createdAt: toIso(data.createdAt),
+    };
+  });
+
+  const moderators: ModeratorRecord[] = modsSnap.docs.map((d) => {
+    const data = d.data();
+    return {
+      uid: String(data.uid ?? d.id),
+      username: String(data.username ?? 'Moderator'),
+      color: String(data.color ?? '#6366F1'),
+      canBan: Boolean(data.canBan),
+      canManageReports: Boolean(data.canManageReports),
+      canManageRooms: Boolean(data.canManageRooms),
+      note: typeof data.note === 'string' ? data.note : null,
+      addedBy: String(data.addedBy ?? ''),
+      addedByUsername: String(data.addedByUsername ?? 'Admin'),
+      createdAt: toIso(data.createdAt),
+    };
+  });
+
+  const deletedUsers: DeletedUserRecord[] = deletedSnap.docs
+    .map((d) => {
+      const data = d.data();
+      return {
+        uid: String(data.uid ?? d.id),
+        username: String(data.username ?? 'RemovedUser'),
+        reason: typeof data.reason === 'string' ? data.reason : null,
+        deletedBy: String(data.deletedBy ?? ''),
+        deletedByUsername: String(data.deletedByUsername ?? 'Admin'),
+        deletedAt: toIso(data.deletedAt),
+      };
+    })
+    .sort((a, b) => new Date(b.deletedAt).getTime() - new Date(a.deletedAt).getTime());
+
+  const activities: Record<string, UserActivity> = {};
+  for (const d of activitySnap.docs) {
+    const data = d.data();
+    const uid = String(data.uid ?? d.id);
+    const rawScreen = String(data.lastScreen ?? 'chat');
+    const lastScreen: AppScreen =
+      rawScreen === 'profile' ||
+      rawScreen === 'settings' ||
+      rawScreen === 'terms' ||
+      rawScreen === 'admin'
+        ? rawScreen
+        : 'chat';
+    activities[uid] = {
+      uid,
+      lastSeenAt: toIso(data.lastSeenAt),
+      sessionCount: typeof data.sessionCount === 'number' ? data.sessionCount : 0,
+      messagesSentCount: typeof data.messagesSentCount === 'number' ? data.messagesSentCount : 0,
+      lastScreen,
+    };
+  }
+
+  const reports: ReportEntry[] = reportsSnap.docs.map((d) => {
+    const data = d.data();
+    const rawStatus = String(data.status ?? 'pending');
+    const status: ReportStatus =
+      rawStatus === 'resolved' || rawStatus === 'dismissed' ? rawStatus : 'pending';
+    return {
+      id: d.id,
+      reporterId: String(data.reporterId ?? ''),
+      reportedUserId: data.reportedUserId ? String(data.reportedUserId) : null,
+      chatId: data.chatId ? String(data.chatId) : null,
+      messageId: data.messageId ? String(data.messageId) : null,
+      reason: String(data.reason ?? ''),
+      status,
+      resolvedBy: data.resolvedBy ? String(data.resolvedBy) : null,
+      resolvedByUsername: data.resolvedByUsername ? String(data.resolvedByUsername) : null,
+      resolutionNote: typeof data.resolutionNote === 'string' ? data.resolutionNote : null,
+      resolvedAt: toNullableIso(data.resolvedAt),
+      createdAt: toIso(data.createdAt),
+    };
+  });
+
+  const chats: AdminChatRoomSummary[] = chatsSnap.docs
+    .map((d) => {
+      const data = d.data();
+      return {
+        id: d.id,
+        type: data.type === 'dm' ? ('dm' as const) : ('group' as const),
+        visibility: data.visibility === 'private' ? ('private' as const) : ('public' as const),
+        name: data.name ? String(data.name) : null,
+        description: data.description ? String(data.description) : null,
+        createdBy: String(data.createdBy ?? ''),
+        memberCount: typeof data.memberCount === 'number' ? data.memberCount : 0,
+        lastMessageAt: toNullableIso(data.lastMessageAt),
+        lastMessagePreview: data.lastMessagePreview ? String(data.lastMessagePreview) : null,
+        lastSenderId: data.lastSenderId ? String(data.lastSenderId) : null,
+        lastSenderUsername: data.lastSenderUsername ? String(data.lastSenderUsername) : null,
+        createdAt: toIso(data.createdAt),
+      };
+    })
+    .sort(
+      (a, b) =>
+        new Date(b.lastMessageAt ?? b.createdAt).getTime() -
+        new Date(a.lastMessageAt ?? a.createdAt).getTime(),
+    );
+
+  const logs: ModerationLog[] = logsSnap.docs.map((d) => {
+    const data = d.data();
+    return {
+      id: d.id,
+      actorId: String(data.actorId ?? ''),
+      actorUsername: String(data.actorUsername ?? 'Staff'),
+      actorRole: data.actorRole === 'moderator' ? 'moderator' : 'admin',
+      action: String(data.action ?? 'ban_user') as ModerationActionType,
+      targetUserId: data.targetUserId ? String(data.targetUserId) : null,
+      targetUsername: data.targetUsername ? String(data.targetUsername) : null,
+      targetChatId: data.targetChatId ? String(data.targetChatId) : null,
+      details: String(data.details ?? ''),
+      createdAt: toIso(data.createdAt),
+    };
+  });
+
+  return {
+    profiles,
+    admins,
+    moderators,
+    deletedUsers,
+    activities,
+    reports,
+    chats,
+    logs,
+  };
+}
+
+export async function fetchUserTrackingDetails(uid: string): Promise<UserTrackingDetails> {
+  const db = getFirestoreDb();
+  const [activitySnap, rateSnap, myChatsSnap, blocksSnap] = await Promise.all([
+    getDoc(doc(db, 'userActivity', uid)).catch(() => null),
+    getDoc(doc(db, 'rateLimits', uid)).catch(() => null),
+    getDocs(collection(db, 'profiles', uid, 'myChats')).catch(() => null),
+    getDocs(collection(db, 'profiles', uid, 'blocks')).catch(() => null),
+  ]);
+
+  let activity: UserActivity | null = null;
+  if (activitySnap && activitySnap.exists()) {
+    const data = activitySnap.data();
+    const rawScreen = String(data.lastScreen ?? 'chat');
+    activity = {
+      uid,
+      lastSeenAt: toIso(data.lastSeenAt),
+      sessionCount: typeof data.sessionCount === 'number' ? data.sessionCount : 0,
+      messagesSentCount: typeof data.messagesSentCount === 'number' ? data.messagesSentCount : 0,
+      lastScreen:
+        rawScreen === 'profile' ||
+        rawScreen === 'settings' ||
+        rawScreen === 'terms' ||
+        rawScreen === 'admin'
+          ? rawScreen
+          : 'chat',
+    };
+  }
+
+  let rateLimit: UserTrackingDetails['rateLimit'] = null;
+  if (rateSnap && rateSnap.exists()) {
+    const data = rateSnap.data();
+    rateLimit = {
+      windowStart: toIso(data.windowStart),
+      count: typeof data.count === 'number' ? data.count : 0,
+      lastMessageId: String(data.lastMessageId ?? ''),
+    };
+  }
+
+  const joinedChats: ChatSummary[] = myChatsSnap ? myChatsSnap.docs.map(mapUserChatDoc) : [];
+
+  return {
+    activity,
+    rateLimit,
+    joinedChats,
+    blockCount: blocksSnap ? blocksSnap.size : 0,
+  };
+}
+
+export async function adminBanUser(
+  actor: Profile,
+  actorRole: 'admin' | 'moderator',
+  targetUser: Profile,
+  banned: boolean,
+  reason?: string,
+): Promise<void> {
+  if (targetUser.id === actor.id) {
+    throw new Error('You cannot ban or unban your own account.');
+  }
+  const db = getFirestoreDb();
+  const path = `profiles/${targetUser.id}`;
+  const cleanReason = banned ? (reason ?? '').trim().slice(0, 240) || 'Policy violation' : null;
+  try {
+    await updateDoc(doc(db, 'profiles', targetUser.id), {
+      banned,
+      bannedReason: cleanReason,
+      bannedAt: banned ? serverTimestamp() : null,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+
+  await writeModerationLog({
+    actor,
+    actorRole,
+    action: banned ? 'ban_user' : 'unban_user',
+    targetUserId: targetUser.id,
+    targetUsername: targetUser.username,
+    details: banned
+      ? `Banned ${targetUser.username}: ${cleanReason}`
+      : `Lifted platform ban for ${targetUser.username}`,
+  });
+}
+
+export async function adminResetUserProfile(
+  actor: Profile,
+  targetUser: Profile,
+  options: { clearBio?: boolean; clearAvatar?: boolean; randomizeUsername?: boolean },
+): Promise<{ username?: string }> {
+  const db = getFirestoreDb();
+  const path = `profiles/${targetUser.id}`;
+  const payload: Record<string, unknown> = {};
+  const changes: string[] = [];
+  let nextUsername: string | undefined;
+
+  if (options.clearBio) {
+    payload.bio = '';
+    changes.push('cleared bio');
+  }
+  if (options.clearAvatar) {
+    payload.avatarUrl = null;
+    changes.push('cleared avatar');
+  }
+  if (options.randomizeUsername) {
+    nextUsername = generateUsername();
+    const nextHistory: UsernameHistoryEntry[] = [
+      { username: targetUser.username, changedAt: new Date().toISOString() },
+      ...(targetUser.usernameHistory ?? []),
+    ].slice(0, 20);
+    payload.username = nextUsername;
+    payload.lastUsernameChangeAt = serverTimestamp();
+    payload.usernameHistory = nextHistory;
+    changes.push(`renamed to ${nextUsername}`);
+  }
+
+  if (changes.length === 0) return {};
+
+  try {
+    await updateDoc(doc(db, 'profiles', targetUser.id), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+
+  await writeModerationLog({
+    actor,
+    actorRole: 'admin',
+    action: 'reset_profile',
+    targetUserId: targetUser.id,
+    targetUsername: nextUsername ?? targetUser.username,
+    details: `Reset profile for ${targetUser.username} (${changes.join(', ')})`,
+  });
+
+  return { username: nextUsername };
+}
+
+export async function adminResetRateLimit(actor: Profile, targetUser: Profile): Promise<void> {
+  const db = getFirestoreDb();
+  const path = `rateLimits/${targetUser.id}`;
+  try {
+    await deleteDoc(doc(db, 'rateLimits', targetUser.id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+
+  await writeModerationLog({
+    actor,
+    actorRole: 'admin',
+    action: 'reset_ratelimit',
+    targetUserId: targetUser.id,
+    targetUsername: targetUser.username,
+    details: `Cleared active spam-rate cooldown for ${targetUser.username}`,
+  });
+}
+
+export async function adminDeleteUser(
+  actor: Profile,
+  targetUser: Profile,
+  reason?: string,
+): Promise<void> {
+  if (targetUser.id === actor.id) {
+    throw new Error('You cannot delete your own account from the admin panel.');
+  }
+
+  const db = getFirestoreDb();
+  const cleanReason = (reason ?? '').trim().slice(0, 240) || 'Removed by platform administrator';
+
+  // 1. Clean up all joined chats, memberships, typing states, readReceipts & memberCount
+  const myChatsSnap = await getDocs(collection(db, 'profiles', targetUser.id, 'myChats')).catch(
+    () => null,
+  );
+
+  if (myChatsSnap) {
+    for (const chatLink of myChatsSnap.docs) {
+      const chatId = chatLink.id;
+      try {
+        const chatSnap = await getDoc(doc(db, 'chats', chatId));
+        if (chatSnap.exists()) {
+          const memberSnap = await getDoc(doc(db, 'chats', chatId, 'members', targetUser.id));
+          if (memberSnap.exists()) {
+            const currentCount =
+              typeof chatSnap.data().memberCount === 'number' ? chatSnap.data().memberCount : 1;
+            const batch = writeBatch(db);
+            batch.delete(doc(db, 'chats', chatId, 'members', targetUser.id));
+            batch.update(doc(db, 'chats', chatId), {
+              memberCount: Math.max(0, currentCount - 1),
+            });
+            await batch.commit();
+          }
+        }
+        await Promise.allSettled([
+          deleteDoc(doc(db, 'chats', chatId, 'typing', targetUser.id)),
+          deleteDoc(doc(db, 'chats', chatId, 'readReceipts', targetUser.id)),
+        ]);
+      } catch {
+        // Continue cleanup across remaining chats
+      }
+      await deleteDoc(chatLink.ref).catch(() => undefined);
+    }
+  }
+
+  // 2. Clean up private subcollections under user profile
+  const [blocksSnap, nicknamesSnap, favoritesSnap] = await Promise.all([
+    getDocs(collection(db, 'profiles', targetUser.id, 'blocks')).catch(() => null),
+    getDocs(collection(db, 'profiles', targetUser.id, 'nicknames')).catch(() => null),
+    getDocs(collection(db, 'profiles', targetUser.id, 'favorites')).catch(() => null),
+  ]);
+
+  const subDocs = [
+    ...(blocksSnap ? blocksSnap.docs : []),
+    ...(nicknamesSnap ? nicknamesSnap.docs : []),
+    ...(favoritesSnap ? favoritesSnap.docs : []),
+  ];
+  for (let i = 0; i < subDocs.length; i += 400) {
+    const batch = writeBatch(db);
+    for (const d of subDocs.slice(i, i + 400)) {
+      batch.delete(d.ref);
+    }
+    await batch.commit().catch(() => undefined);
+  }
+
+  // 3. Remove rate limits, activity telemetry, staff roles
+  await Promise.allSettled([
+    deleteDoc(doc(db, 'rateLimits', targetUser.id)),
+    deleteDoc(doc(db, 'userActivity', targetUser.id)),
+    deleteDoc(doc(db, 'moderators', targetUser.id)),
+    deleteDoc(doc(db, 'admins', targetUser.id)),
+  ]);
+
+  // 4. Delete profile document
+  try {
+    await deleteDoc(doc(db, 'profiles', targetUser.id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `profiles/${targetUser.id}`);
+  }
+
+  // 5. Write tombstone so deleted UID cannot silently recreate a profile
+  try {
+    await setDoc(doc(db, 'deletedUsers', targetUser.id), {
+      uid: targetUser.id,
+      username: targetUser.username,
+      reason: cleanReason,
+      deletedBy: actor.id,
+      deletedByUsername: actor.username,
+      deletedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `deletedUsers/${targetUser.id}`);
+  }
+
+  await writeModerationLog({
+    actor,
+    actorRole: 'admin',
+    action: 'delete_user',
+    targetUserId: targetUser.id,
+    targetUsername: targetUser.username,
+    details: `Permanently removed ${targetUser.username} from platform (${cleanReason})`,
+  });
+}
+
+export async function adminRestoreDeletedUser(
+  actor: Profile,
+  record: DeletedUserRecord,
+): Promise<void> {
+  const db = getFirestoreDb();
+  const path = `deletedUsers/${record.uid}`;
+  try {
+    await deleteDoc(doc(db, 'deletedUsers', record.uid));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+
+  await writeModerationLog({
+    actor,
+    actorRole: 'admin',
+    action: 'restore_user',
+    targetUserId: record.uid,
+    targetUsername: record.username,
+    details: `Cleared removal lock for ${record.username} (${record.uid})`,
+  });
+}
+
+export async function adminAddOrUpdateModerator(
+  actor: Profile,
+  targetUser: Profile,
+  permissions: {
+    canBan: boolean;
+    canManageReports: boolean;
+    canManageRooms: boolean;
+    note?: string;
+  },
+  isUpdate = false,
+): Promise<void> {
+  const db = getFirestoreDb();
+  const path = `moderators/${targetUser.id}`;
+  const cleanNote = (permissions.note ?? '').trim().slice(0, 200) || null;
+
+  try {
+    if (isUpdate) {
+      await updateDoc(doc(db, 'moderators', targetUser.id), {
+        username: targetUser.username,
+        color: targetUser.color,
+        canBan: permissions.canBan,
+        canManageReports: permissions.canManageReports,
+        canManageRooms: permissions.canManageRooms,
+        note: cleanNote,
+      });
+    } else {
+      await setDoc(doc(db, 'moderators', targetUser.id), {
+        uid: targetUser.id,
+        username: targetUser.username,
+        color: targetUser.color,
+        canBan: permissions.canBan,
+        canManageReports: permissions.canManageReports,
+        canManageRooms: permissions.canManageRooms,
+        note: cleanNote,
+        addedBy: actor.id,
+        addedByUsername: actor.username,
+        createdAt: serverTimestamp(),
+      });
+    }
+  } catch (error) {
+    handleFirestoreError(error, isUpdate ? OperationType.UPDATE : OperationType.CREATE, path);
+  }
+
+  const permsSummary =
+    [
+      permissions.canBan ? 'Ban users' : null,
+      permissions.canManageReports ? 'Triage reports' : null,
+      permissions.canManageRooms ? 'Manage rooms' : null,
+    ]
+      .filter(Boolean)
+      .join(', ') || 'Read-only tracking';
+
+  await writeModerationLog({
+    actor,
+    actorRole: 'admin',
+    action: isUpdate ? 'update_moderator' : 'add_moderator',
+    targetUserId: targetUser.id,
+    targetUsername: targetUser.username,
+    details: `${isUpdate ? 'Updated' : 'Assigned'} moderator ${targetUser.username} [${permsSummary}]`,
+  });
+}
+
+export async function adminRemoveModerator(actor: Profile, targetUser: { uid: string; username: string }): Promise<void> {
+  const db = getFirestoreDb();
+  const path = `moderators/${targetUser.uid}`;
+  try {
+    await deleteDoc(doc(db, 'moderators', targetUser.uid));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+
+  await writeModerationLog({
+    actor,
+    actorRole: 'admin',
+    action: 'remove_moderator',
+    targetUserId: targetUser.uid,
+    targetUsername: targetUser.username,
+    details: `Revoked moderator access for ${targetUser.username}`,
+  });
+}
+
+export async function adminAddSuperAdmin(
+  actor: Profile,
+  targetUser: Profile,
+  note?: string,
+): Promise<void> {
+  const db = getFirestoreDb();
+  const path = `admins/${targetUser.id}`;
+  const cleanNote = (note ?? '').trim().slice(0, 200) || null;
+  try {
+    await setDoc(doc(db, 'admins', targetUser.id), {
+      uid: targetUser.id,
+      username: targetUser.username,
+      color: targetUser.color,
+      addedBy: actor.id,
+      addedByUsername: actor.username,
+      note: cleanNote,
+      createdAt: serverTimestamp(),
+    });
+    // Clean up moderator doc if promoting from moderator
+    await deleteDoc(doc(db, 'moderators', targetUser.id)).catch(() => undefined);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+
+  await writeModerationLog({
+    actor,
+    actorRole: 'admin',
+    action: 'add_admin',
+    targetUserId: targetUser.id,
+    targetUsername: targetUser.username,
+    details: `Granted Super Admin privileges to ${targetUser.username}`,
+  });
+}
+
+export async function adminRemoveSuperAdmin(
+  actor: Profile,
+  targetUser: { uid: string; username: string },
+): Promise<void> {
+  if (targetUser.uid === actor.id) {
+    throw new Error('You cannot revoke your own admin role.');
+  }
+  const db = getFirestoreDb();
+  const path = `admins/${targetUser.uid}`;
+  try {
+    await deleteDoc(doc(db, 'admins', targetUser.uid));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+
+  await writeModerationLog({
+    actor,
+    actorRole: 'admin',
+    action: 'remove_admin',
+    targetUserId: targetUser.uid,
+    targetUsername: targetUser.username,
+    details: `Revoked Super Admin privileges for ${targetUser.username}`,
+  });
+}
+
+export async function adminResolveReport(
+  actor: Profile,
+  actorRole: 'admin' | 'moderator',
+  report: ReportEntry,
+  status: 'resolved' | 'dismissed',
+  note?: string,
+): Promise<void> {
+  const db = getFirestoreDb();
+  const path = `reports/${report.id}`;
+  const cleanNote = (note ?? '').trim().slice(0, 300) || null;
+  try {
+    await updateDoc(doc(db, 'reports', report.id), {
+      status,
+      resolvedBy: actor.id,
+      resolvedByUsername: actor.username,
+      resolutionNote: cleanNote,
+      resolvedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+
+  await writeModerationLog({
+    actor,
+    actorRole,
+    action: status === 'resolved' ? 'resolve_report' : 'dismiss_report',
+    targetUserId: report.reportedUserId,
+    targetChatId: report.chatId,
+    details: `${status === 'resolved' ? 'Resolved' : 'Dismissed'} report ${report.id.slice(0, 8)}${cleanNote ? `: ${cleanNote}` : ''}`,
+  });
+}
+
+export async function adminDeleteReport(actor: Profile, reportId: string): Promise<void> {
+  const db = getFirestoreDb();
+  const path = `reports/${reportId}`;
+  try {
+    await deleteDoc(doc(db, 'reports', reportId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+
+  await writeModerationLog({
+    actor,
+    actorRole: 'admin',
+    action: 'dismiss_report',
+    details: `Deleted report record ${reportId.slice(0, 8)}`,
+  });
+}
+
+export async function adminFetchRoomMembers(chatId: string): Promise<Profile[]> {
+  return fetchChatMembers(chatId);
+}
+
+export async function adminDeleteGroupRoom(
+  actor: Profile,
+  actorRole: 'admin' | 'moderator',
+  room: AdminChatRoomSummary,
+): Promise<void> {
+  if (room.type !== 'group') {
+    throw new Error('Only group rooms can be deleted by moderators.');
+  }
+  const db = getFirestoreDb();
+
+  const [membersSnap, typingSnap, reactionsSnap, receiptsSnap, requestsSnap, messagesSnap] =
+    await Promise.all([
+      getDocs(collection(db, 'chats', room.id, 'members')).catch(() => null),
+      getDocs(collection(db, 'chats', room.id, 'typing')).catch(() => null),
+      getDocs(collection(db, 'chats', room.id, 'reactions')).catch(() => null),
+      getDocs(collection(db, 'chats', room.id, 'readReceipts')).catch(() => null),
+      getDocs(collection(db, 'chats', room.id, 'joinRequests')).catch(() => null),
+      getDocs(collection(db, 'chats', room.id, 'messages')).catch(() => null),
+    ]);
+
+  // Remove room link from every member's myChats
+  if (membersSnap) {
+    for (const memberDoc of membersSnap.docs) {
+      await deleteDoc(doc(db, 'profiles', memberDoc.id, 'myChats', room.id)).catch(() => undefined);
+    }
+  }
+
+  const subDocs = [
+    ...(typingSnap ? typingSnap.docs : []),
+    ...(reactionsSnap ? reactionsSnap.docs : []),
+    ...(receiptsSnap ? receiptsSnap.docs : []),
+    ...(requestsSnap ? requestsSnap.docs : []),
+    ...(messagesSnap ? messagesSnap.docs : []),
+    ...(membersSnap ? membersSnap.docs : []),
+  ];
+
+  for (let i = 0; i < subDocs.length; i += 400) {
+    const batch = writeBatch(db);
+    for (const d of subDocs.slice(i, i + 400)) {
+      batch.delete(d.ref);
+    }
+    await batch.commit().catch(() => undefined);
+  }
+
+  try {
+    await deleteDoc(doc(db, 'chats', room.id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `chats/${room.id}`);
+  }
+
+  await writeModerationLog({
+    actor,
+    actorRole,
+    action: 'delete_room',
+    targetChatId: room.id,
+    details: `Deleted group room "${room.name ?? room.id}" (${room.memberCount} members)`,
+  });
+}
+

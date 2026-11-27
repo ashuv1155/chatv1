@@ -12,6 +12,7 @@ import {
   Pencil,
   RefreshCw,
   ShieldAlert,
+  ShieldCheck,
   Star,
   Sun,
   Trash2,
@@ -28,6 +29,7 @@ import type {
   FavoriteEntry,
   NotificationSettings,
   Profile,
+  StaffAccess,
   ThemePreference,
 } from '../types';
 
@@ -52,6 +54,8 @@ interface SettingsScreenProps {
   onOpenTerms: () => void;
   onSignOut: () => Promise<void>;
   onDeleteAccount: () => Promise<void>;
+  staffAccess?: StaffAccess;
+  onOpenAdmin?: () => void;
   onBack: () => void;
 }
 
@@ -76,6 +80,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onOpenTerms,
   onSignOut,
   onDeleteAccount,
+  staffAccess,
+  onOpenAdmin,
   onBack,
 }) => {
   const [editingUsername, setEditingUsername] = useState(false);
@@ -313,6 +319,36 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             )}
           </div>
         </section>
+
+        {staffAccess?.isStaff && onOpenAdmin && (
+          <section className="rounded-2xl bg-white dark:bg-[#141414] border border-[#2B84F6]/30 p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="h-10 w-10 rounded-xl bg-[#2B84F6]/12 text-[#2B84F6] flex items-center justify-center shrink-0">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <div className="space-y-0.5">
+                <h2 className="text-sm font-semibold">
+                  Admin & Moderation Console
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-neutral-400">
+                  {staffAccess.isPrimaryOwner
+                    ? 'Signed in as Primary Platform Owner — full user, moderator, room, and tracking controls.'
+                    : staffAccess.isAdmin
+                      ? 'Super Admin access — manage users, moderators, reports, and tracking telemetry.'
+                      : 'Moderator access — review safety reports, manage rooms, and track activity.'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onOpenAdmin}
+              className="min-h-[40px] px-4 py-2 rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span>Open Console</span>
+            </button>
+          </section>
+        )}
 
         <section className="rounded-2xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.1] p-6 space-y-5">
           <div className="flex items-center justify-between gap-3">

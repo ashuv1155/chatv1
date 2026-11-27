@@ -11,6 +11,8 @@ export interface Profile {
   avatarUrl: string | null;
   usernameHistory: UsernameHistoryEntry[];
   banned: boolean;
+  bannedReason?: string | null;
+  bannedAt?: string | null;
   lastUsernameChangeAt: string | null;
   createdAt?: string;
 }
@@ -153,4 +155,132 @@ export interface NotificationSettings {
 
 export type ThemePreference = 'system' | 'dark' | 'light';
 
-export type AppScreen = 'chat' | 'profile' | 'settings' | 'terms';
+export type AppScreen = 'chat' | 'profile' | 'settings' | 'terms' | 'admin';
+
+export type PlatformRole = 'user' | 'moderator' | 'admin';
+
+export interface StaffAccess {
+  role: PlatformRole;
+  isPrimaryOwner: boolean;
+  isAdmin: boolean;
+  isModerator: boolean;
+  isStaff: boolean;
+  canBan: boolean;
+  canManageReports: boolean;
+  canManageRooms: boolean;
+  canManageStaff: boolean;
+  canDeleteUsers: boolean;
+}
+
+export interface AdminRecord {
+  uid: string;
+  username: string;
+  color: string;
+  addedBy: string;
+  addedByUsername: string;
+  note?: string | null;
+  createdAt: string;
+}
+
+export interface ModeratorRecord {
+  uid: string;
+  username: string;
+  color: string;
+  canBan: boolean;
+  canManageReports: boolean;
+  canManageRooms: boolean;
+  note?: string | null;
+  addedBy: string;
+  addedByUsername: string;
+  createdAt: string;
+}
+
+export interface DeletedUserRecord {
+  uid: string;
+  username: string;
+  reason?: string | null;
+  deletedBy: string;
+  deletedByUsername: string;
+  deletedAt: string;
+}
+
+export interface UserActivity {
+  uid: string;
+  lastSeenAt: string;
+  sessionCount: number;
+  messagesSentCount: number;
+  lastScreen: AppScreen;
+}
+
+export type ModerationActionType =
+  | 'ban_user'
+  | 'unban_user'
+  | 'delete_user'
+  | 'restore_user'
+  | 'add_moderator'
+  | 'update_moderator'
+  | 'remove_moderator'
+  | 'add_admin'
+  | 'remove_admin'
+  | 'resolve_report'
+  | 'dismiss_report'
+  | 'reset_profile'
+  | 'reset_ratelimit'
+  | 'delete_room';
+
+export interface ModerationLog {
+  id: string;
+  actorId: string;
+  actorUsername: string;
+  actorRole: 'admin' | 'moderator';
+  action: ModerationActionType;
+  targetUserId?: string | null;
+  targetUsername?: string | null;
+  targetChatId?: string | null;
+  details: string;
+  createdAt: string;
+}
+
+export type ReportStatus = 'pending' | 'resolved' | 'dismissed';
+
+export interface ReportEntry {
+  id: string;
+  reporterId: string;
+  reportedUserId: string | null;
+  chatId: string | null;
+  messageId: string | null;
+  reason: string;
+  status: ReportStatus;
+  resolvedBy?: string | null;
+  resolvedByUsername?: string | null;
+  resolutionNote?: string | null;
+  resolvedAt?: string | null;
+  createdAt: string;
+}
+
+export interface AdminChatRoomSummary {
+  id: string;
+  type: ChatType;
+  visibility: GroupVisibility;
+  name: string | null;
+  description: string | null;
+  createdBy: string;
+  memberCount: number;
+  lastMessageAt: string | null;
+  lastMessagePreview: string | null;
+  lastSenderId: string | null;
+  lastSenderUsername: string | null;
+  createdAt: string;
+}
+
+export interface UserTrackingDetails {
+  activity: UserActivity | null;
+  rateLimit: {
+    windowStart: string;
+    count: number;
+    lastMessageId: string;
+  } | null;
+  joinedChats: ChatSummary[];
+  blockCount: number;
+}
+

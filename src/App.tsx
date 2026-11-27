@@ -11,6 +11,7 @@ import {
   UserCircle2,
   X,
 } from 'lucide-react';
+import { AdminDashboard } from './components/AdminDashboard';
 import { Avatar } from './components/Avatar';
 import { BlockConfirmModal } from './components/BlockConfirmModal';
 import { ChatView } from './components/ChatView';
@@ -23,19 +24,24 @@ import { Sidebar } from './components/Sidebar';
 import { TermsPrivacyScreen } from './components/TermsPrivacyScreen';
 import { UsernameOnboardingScreen } from './components/UsernameOnboardingScreen';
 import {
+  DEFAULT_USER_STAFF_ACCESS,
   addFavoriteUser,
   blockUser,
   createGroup,
   createInitialUserProfile,
   deleteOwnAccount,
+  ensurePrimaryOwnerAdminRecord,
   fetchBlocks,
+  fetchDeletedUserRecord,
   fetchOwnProfile,
+  fetchStaffAccess,
   fetchUnreadCountForChat,
   getDisplayName,
   joinGroup,
   leaveGroup,
   markChatDelivered,
   markChatRead,
+  recordUserActivity,
   removeChatFromMyList,
   removeFavoriteUser,
   removeFriendNickname,
@@ -70,11 +76,13 @@ import type {
   BlockEntry,
   ChatReadReceipt,
   ChatSummary,
+  DeletedUserRecord,
   DeliveryStatus,
   FavoriteEntry,
   GroupVisibility,
   NotificationSettings,
   Profile,
+  StaffAccess,
   ThemePreference,
 } from './types';
 
@@ -108,6 +116,8 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [staffAccess, setStaffAccess] = useState<StaffAccess>(DEFAULT_USER_STAFF_ACCESS);
+  const [deletedUserNotice, setDeletedUserNotice] = useState<DeletedUserRecord | null>(null);
   const [needsUsernameOnboarding, setNeedsUsernameOnboarding] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(false);
 
@@ -391,6 +401,8 @@ export default function App() {
 
       if (!user) {
         setProfile(null);
+        setStaffAccess(DEFAULT_USER_STAFF_ACCESS);
+        setDeletedUserNotice(null);
         setNeedsUsernameOnboarding(false);
         setMyChatLinks([]);
         setGroupMetaMap({});
@@ -418,13 +430,30 @@ export default function App() {
       try {
         const userProfile = await fetchOwnProfile(user.uid);
         if (!userProfile) {
-          setProfile(null);
-          setNeedsUsernameOnboarding(true);
+          const deletedRecord = await fetchDeletedUserRecord(user.uid);
+          if (deletedRecord) {
+            setProfile(null);
+            setDeletedUserNotice(deletedRecord);
+            setNeedsUsernameOnboarding(false);
+          } else {
+            setProfile(null);
+            setDeletedUserNotice(null);
+            setNeedsUsernameOnboarding(true);
+          }
         } else {
+          setDeletedUserNotice(null);
           setProfile(userProfile);
           setNeedsUsernameOnboarding(false);
-          const blockRows = await fetchBlocks(user.uid);
+          const [blockRows, access] = await Promise.all([
+            fetchBlocks(user.uid),
+            fetchStaffAccess(user),
+          ]);
           setBlocks(blockRows);
+          setStaffAccess(access);
+          if (access.isPrimaryOwner) {
+            void ensurePrimaryOwnerAdminRecord(user, userProfile);
+          }
+          void recordUserActivity(user.uid, 'chat', { newSession: true });
         }
       } catch (err) {
         let message = err instanceof Error ? err.message : 'Unable to finish anonymous sign-in.';
@@ -443,6 +472,12 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
+
+  // Track user screen activity cleanly
+  useEffect(() => {
+    if (!profile) return;
+    void recordUserActivity(profile.id, screen);
+  }, [profile, screen]);
 
   // Real-time listener on private friend nicknames
   useEffect(() => {
@@ -909,8 +944,16 @@ export default function App() {
     });
     setProfile(createdProfile);
     setNeedsUsernameOnboarding(false);
-    const blockRows = await fetchBlocks(firebaseUser.uid);
+    const [blockRows, access] = await Promise.all([
+      fetchBlocks(firebaseUser.uid),
+      fetchStaffAccess(firebaseUser),
+    ]);
     setBlocks(blockRows);
+    setStaffAccess(access);
+    if (access.isPrimaryOwner) {
+      void ensurePrimaryOwnerAdminRecord(firebaseUser, createdProfile);
+    }
+    void recordUserActivity(firebaseUser.uid, 'chat', { newSession: true });
   };
 
   const handleCreateGroup = async (
@@ -1103,7 +1146,7 @@ export default function App() {
     setScreen('profile');
   };
 
-  if (!authReady || (firebaseUser && bootstrapping && !profile && !needsUsernameOnboarding)) {
+  if (!authReady || (firebaseUser && bootstrapping && !profile && !needsUsernameOnboarding && !deletedUserNotice)) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-black text-slate-900 dark:text-neutral-100 flex items-center justify-center p-6">
         <div className="text-center space-y-2">
@@ -1111,6 +1154,36 @@ export default function App() {
           <p className="text-sm text-slate-500 dark:text-neutral-400">
             {bootstrapping ? 'Preparing your anonymous session...' : 'Loading...'}
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (firebaseUser && deletedUserNotice && !profile) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-black text-slate-900 dark:text-neutral-100 flex items-center justify-center p-6">
+        <div className="w-full max-w-md rounded-2xl bg-white dark:bg-[#141417] border border-red-500/30 p-6 space-y-4 text-center">
+          <div className="h-11 w-11 rounded-full bg-red-500/12 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto">
+            <ShieldCheck className="w-5 h-5" />
+          </div>
+          <div className="space-y-1.5">
+            <h1 className="text-lg font-bold tracking-tight">Account Removed</h1>
+            <p className="text-xs text-slate-500 dark:text-neutral-400 leading-relaxed">
+              The account <span className="font-semibold text-slate-800 dark:text-neutral-200">{deletedUserNotice.username}</span> was permanently removed from Buddy Chat by an administrator.
+            </p>
+            {deletedUserNotice.reason && (
+              <p className="text-xs text-red-600 dark:text-red-400 pt-1">
+                Reason: {deletedUserNotice.reason}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="w-full min-h-[42px] px-4 py-2 rounded-full bg-slate-900 dark:bg-white text-white dark:text-black text-xs font-semibold"
+          >
+            Sign out
+          </button>
         </div>
       </div>
     );
@@ -1143,6 +1216,19 @@ export default function App() {
     return <TermsPrivacyScreen onBack={() => setScreen('settings')} />;
   }
 
+  if (screen === 'admin' && staffAccess.isStaff) {
+    return (
+      <AdminDashboard
+        currentUser={profile}
+        currentUserEmail={firebaseUser.email ?? null}
+        staffAccess={staffAccess}
+        onBack={() => setScreen('chat')}
+        onOpenPublicProfile={openProfilePage}
+        onToast={(msg) => setToast(msg)}
+      />
+    );
+  }
+
   if (screen === 'settings') {
     return (
       <SettingsScreen
@@ -1166,6 +1252,8 @@ export default function App() {
         onOpenTerms={() => setScreen('terms')}
         onSignOut={handleSignOut}
         onDeleteAccount={handleDeleteAccount}
+        staffAccess={staffAccess}
+        onOpenAdmin={() => setScreen('admin')}
         onBack={() => setScreen('chat')}
       />
     );
@@ -1229,6 +1317,8 @@ export default function App() {
               onOpenCreateGroup={() => setCreateGroupOpen(true)}
               onOpenProfile={openProfilePage}
               onOpenSettings={() => setScreen('settings')}
+              isStaff={staffAccess.isStaff}
+              onOpenAdmin={() => setScreen('admin')}
               onToast={(msg) => setToast(msg)}
             />
           </div>
@@ -1284,7 +1374,17 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                      {staffAccess.isStaff && (
+                        <button
+                          type="button"
+                          onClick={() => setScreen('admin')}
+                          className="min-h-[44px] px-4 py-2 rounded-full border border-[#2B84F6]/35 bg-[#2B84F6]/10 hover:bg-[#2B84F6]/15 text-[#2B84F6] text-sm font-semibold inline-flex items-center gap-2 transition-colors whitespace-nowrap"
+                        >
+                          <ShieldCheck className="w-4 h-4" />
+                          <span>Admin Console</span>
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => openProfilePage(profile.id)}

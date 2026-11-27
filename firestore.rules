@@ -30,11 +30,56 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    function isAdmin() {
+    function isPrimaryOwnerEmail() {
+      return isSignedIn() &&
+        request.auth.token.email == '8887ashu@gmail.com' &&
+        request.auth.token.email_verified == true;
+    }
+
+    function isSuperAdmin() {
       return isSignedIn() && (
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        (request.auth.token.email == '8887ashu@gmail.com' && request.auth.token.email_verified == true)
+        isPrimaryOwnerEmail() ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
+    }
+
+    function isModerator() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/moderators/$(request.auth.uid));
+    }
+
+    function isAdmin() {
+      return isSuperAdmin();
+    }
+
+    function isStaff() {
+      return isSuperAdmin() || isModerator();
+    }
+
+    function canModBan() {
+      return isSuperAdmin() || (
+        isModerator() &&
+        get(/databases/$(database)/documents/moderators/$(request.auth.uid)).data.canBan == true
+      );
+    }
+
+    function canModReports() {
+      return isSuperAdmin() || (
+        isModerator() &&
+        get(/databases/$(database)/documents/moderators/$(request.auth.uid)).data.canManageReports == true
+      );
+    }
+
+    function canModRooms() {
+      return isSuperAdmin() || (
+        isModerator() &&
+        get(/databases/$(database)/documents/moderators/$(request.auth.uid)).data.canManageRooms == true
+      );
+    }
+
+    function isTargetStaff(userId) {
+      return exists(/databases/$(database)/documents/admins/$(userId)) ||
+        exists(/databases/$(database)/documents/moderators/$(userId));
     }
 
     function isChatMember(chatId) {
@@ -72,7 +117,7 @@ service cloud.firestore {
     // -------------------------------------------------------------------------
     function isValidProfile(data, userId) {
       return data.keys().hasAll(['uid', 'username', 'color', 'banned', 'lastUsernameChangeAt', 'createdAt']) &&
-        data.keys().hasOnly(['uid', 'username', 'color', 'bio', 'avatarUrl', 'usernameHistory', 'banned', 'lastUsernameChangeAt', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'username', 'color', 'bio', 'avatarUrl', 'usernameHistory', 'banned', 'bannedReason', 'bannedAt', 'lastUsernameChangeAt', 'createdAt']) &&
         data.uid is string && data.uid == userId &&
         isValidUsername(data.username) &&
         isValidHexColor(data.color) &&
@@ -84,7 +129,86 @@ service cloud.firestore {
           (data.usernameHistory.size() == 0 || data.usernameHistory[0] is map)
         )) &&
         data.banned is bool &&
+        (!('bannedReason' in data) || data.bannedReason == null || (data.bannedReason is string && data.bannedReason.size() <= 240)) &&
+        (!('bannedAt' in data) || data.bannedAt == null || data.bannedAt is timestamp) &&
         (data.lastUsernameChangeAt == null || data.lastUsernameChangeAt is timestamp) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAdminRecord(data, userId) {
+      return data.keys().hasAll(['uid', 'username', 'color', 'addedBy', 'addedByUsername', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'username', 'color', 'addedBy', 'addedByUsername', 'note', 'createdAt']) &&
+        data.uid is string && data.uid == userId &&
+        isValidUsername(data.username) &&
+        isValidHexColor(data.color) &&
+        data.addedBy is string && data.addedBy == request.auth.uid &&
+        isValidUsername(data.addedByUsername) &&
+        (!('note' in data) || data.note == null || (data.note is string && data.note.size() <= 200)) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidModeratorRecord(data, userId) {
+      return data.keys().hasAll(['uid', 'username', 'color', 'canBan', 'canManageReports', 'canManageRooms', 'addedBy', 'addedByUsername', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'username', 'color', 'canBan', 'canManageReports', 'canManageRooms', 'note', 'addedBy', 'addedByUsername', 'createdAt']) &&
+        data.uid is string && data.uid == userId &&
+        isValidUsername(data.username) &&
+        isValidHexColor(data.color) &&
+        data.canBan is bool &&
+        data.canManageReports is bool &&
+        data.canManageRooms is bool &&
+        (!('note' in data) || data.note == null || (data.note is string && data.note.size() <= 200)) &&
+        data.addedBy is string && isValidId(data.addedBy) &&
+        isValidUsername(data.addedByUsername) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidDeletedUser(data, userId) {
+      return data.keys().hasAll(['uid', 'username', 'deletedBy', 'deletedByUsername', 'deletedAt']) &&
+        data.keys().hasOnly(['uid', 'username', 'reason', 'deletedBy', 'deletedByUsername', 'deletedAt']) &&
+        data.uid is string && data.uid == userId &&
+        isValidUsername(data.username) &&
+        (!('reason' in data) || data.reason == null || (data.reason is string && data.reason.size() <= 240)) &&
+        data.deletedBy is string && data.deletedBy == request.auth.uid &&
+        isValidUsername(data.deletedByUsername) &&
+        data.deletedAt is timestamp;
+    }
+
+    function isValidUserActivity(data, userId) {
+      return data.keys().hasAll(['uid', 'lastSeenAt', 'sessionCount', 'messagesSentCount', 'lastScreen']) &&
+        data.keys().hasOnly(['uid', 'lastSeenAt', 'sessionCount', 'messagesSentCount', 'lastScreen']) &&
+        data.uid is string && data.uid == userId &&
+        data.lastSeenAt is timestamp &&
+        data.sessionCount is int && data.sessionCount >= 0 && data.sessionCount <= 1000000 &&
+        data.messagesSentCount is int && data.messagesSentCount >= 0 && data.messagesSentCount <= 10000000 &&
+        data.lastScreen in ['chat', 'profile', 'settings', 'terms', 'admin'];
+    }
+
+    function isValidModerationLog(data) {
+      return data.keys().hasAll(['actorId', 'actorUsername', 'actorRole', 'action', 'details', 'createdAt']) &&
+        data.keys().hasOnly(['actorId', 'actorUsername', 'actorRole', 'action', 'targetUserId', 'targetUsername', 'targetChatId', 'details', 'createdAt']) &&
+        data.actorId is string && data.actorId == request.auth.uid &&
+        isValidUsername(data.actorUsername) &&
+        data.actorRole in ['admin', 'moderator'] &&
+        data.action in [
+          'ban_user',
+          'unban_user',
+          'delete_user',
+          'restore_user',
+          'add_moderator',
+          'update_moderator',
+          'remove_moderator',
+          'add_admin',
+          'remove_admin',
+          'resolve_report',
+          'dismiss_report',
+          'reset_profile',
+          'reset_ratelimit',
+          'delete_room'
+        ] &&
+        (!('targetUserId' in data) || data.targetUserId == null || isValidId(data.targetUserId)) &&
+        (!('targetUsername' in data) || data.targetUsername == null || (data.targetUsername is string && data.targetUsername.size() <= 32)) &&
+        (!('targetChatId' in data) || data.targetChatId == null || isValidId(data.targetChatId)) &&
+        data.details is string && data.details.size() <= 300 &&
         data.createdAt is timestamp;
     }
 
@@ -278,12 +402,17 @@ service cloud.firestore {
 
     function isValidReport(data) {
       return data.keys().hasAll(['reporterId', 'reportedUserId', 'chatId', 'messageId', 'reason', 'createdAt']) &&
-        data.keys().hasOnly(['reporterId', 'reportedUserId', 'chatId', 'messageId', 'reason', 'createdAt']) &&
-        data.reporterId is string && data.reporterId == request.auth.uid &&
+        data.keys().hasOnly(['reporterId', 'reportedUserId', 'chatId', 'messageId', 'reason', 'status', 'resolvedBy', 'resolvedByUsername', 'resolutionNote', 'resolvedAt', 'createdAt']) &&
+        isValidId(data.reporterId) &&
         (data.reportedUserId == null || isValidId(data.reportedUserId)) &&
         (data.chatId == null || isValidId(data.chatId)) &&
         (data.messageId == null || isValidId(data.messageId)) &&
         data.reason is string && data.reason.trim().size() >= 1 && data.reason.size() <= 500 &&
+        (!('status' in data) || data.status in ['pending', 'resolved', 'dismissed']) &&
+        (!('resolvedBy' in data) || data.resolvedBy == null || isValidId(data.resolvedBy)) &&
+        (!('resolvedByUsername' in data) || data.resolvedByUsername == null || isValidUsername(data.resolvedByUsername)) &&
+        (!('resolutionNote' in data) || data.resolutionNote == null || (data.resolutionNote is string && data.resolutionNote.size() <= 300)) &&
+        (!('resolvedAt' in data) || data.resolvedAt == null || data.resolvedAt is timestamp) &&
         data.createdAt is timestamp;
     }
 
@@ -295,18 +424,111 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------------------
+    // Platform Administration & Moderation Roles
+    // -------------------------------------------------------------------------
+    match /admins/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isStaff());
+      allow list: if isStaff();
+
+      allow create: if isSuperAdmin() &&
+        isValidId(userId) &&
+        isValidAdminRecord(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/profiles/$(userId));
+
+      allow update: if false;
+
+      allow delete: if isSuperAdmin() && isValidId(userId) && userId != request.auth.uid;
+    }
+
+    match /moderators/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isStaff());
+      allow list: if isStaff();
+
+      allow create: if isSuperAdmin() &&
+        isValidId(userId) &&
+        isValidModeratorRecord(incoming(), userId) &&
+        incoming().addedBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/profiles/$(userId));
+
+      allow update: if isSuperAdmin() &&
+        isValidId(userId) &&
+        isValidModeratorRecord(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().addedBy == existing().addedBy &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['canBan', 'canManageReports', 'canManageRooms', 'note', 'username', 'color']);
+
+      allow delete: if isSuperAdmin() && isValidId(userId);
+    }
+
+    match /deletedUsers/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isStaff());
+      allow list: if isStaff();
+
+      allow create: if isSuperAdmin() &&
+        isValidId(userId) &&
+        userId != request.auth.uid &&
+        isValidDeletedUser(incoming(), userId) &&
+        incoming().deletedAt == request.time;
+
+      allow update: if false;
+      allow delete: if isSuperAdmin() && isValidId(userId);
+    }
+
+    match /userActivity/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isStaff());
+      allow list: if isStaff();
+
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserActivity(incoming(), userId) &&
+        incoming().lastSeenAt == request.time;
+
+      allow update: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserActivity(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().lastSeenAt == request.time &&
+        incoming().sessionCount >= existing().sessionCount &&
+        incoming().messagesSentCount >= existing().messagesSentCount;
+
+      allow delete: if isValidId(userId) && (
+        isOwner(userId) ||
+        (isSuperAdmin() && userId != request.auth.uid)
+      );
+    }
+
+    match /moderationLogs/{logId} {
+      allow get: if isStaff() && isValidId(logId);
+      allow list: if isStaff();
+
+      allow create: if isStaff() &&
+        isValidId(logId) &&
+        isValidModerationLog(incoming()) &&
+        incoming().actorId == request.auth.uid &&
+        incoming().createdAt == request.time;
+
+      allow update, delete: if false;
+    }
+
+    // -------------------------------------------------------------------------
     // Anonymous Profiles
     // -------------------------------------------------------------------------
     match /profiles/{userId} {
       allow get: if isSignedIn() && isValidId(userId);
-      allow list: if isSignedIn() && existing().banned == false;
+      allow list: if isSignedIn() && (existing().banned == false || isStaff());
 
       allow create: if isOwner(userId) &&
         isValidId(userId) &&
         isValidProfile(incoming(), userId) &&
         incoming().banned == false &&
+        (!('bannedReason' in incoming()) || incoming().bannedReason == null) &&
+        (!('bannedAt' in incoming()) || incoming().bannedAt == null) &&
         incoming().lastUsernameChangeAt == null &&
-        incoming().createdAt == request.time;
+        incoming().createdAt == request.time &&
+        !exists(/databases/$(database)/documents/deletedUsers/$(userId));
 
       allow update: if isSignedIn() &&
         isValidId(userId) &&
@@ -314,10 +536,23 @@ service cloud.firestore {
         incoming().uid == existing().uid &&
         incoming().createdAt == existing().createdAt &&
         (
+          // Staff ban / unban action (Moderators cannot target Super Admins or other Moderators, and nobody bans self)
           (
-            isAdmin() &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['banned'])
+            userId != request.auth.uid &&
+            (isSuperAdmin() || (canModBan() && !isTargetStaff(userId))) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['banned', 'bannedReason', 'bannedAt']) &&
+            (!('bannedAt' in incoming()) || incoming().bannedAt == null || incoming().bannedAt == request.time)
           ) ||
+          // Super Admin profile hygiene reset (clear abusive bio, avatar, or handle)
+          (
+            isSuperAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['bio', 'avatarUrl', 'username', 'lastUsernameChangeAt', 'usernameHistory']) &&
+            (
+              !incoming().diff(existing()).affectedKeys().hasAny(['username']) ||
+              incoming().lastUsernameChangeAt == request.time
+            )
+          ) ||
+          // Profile owner self-update
           (
             isOwner(userId) &&
             !existing().banned &&
@@ -335,11 +570,15 @@ service cloud.firestore {
           )
         );
 
-      allow delete: if isOwner(userId) && isValidId(userId);
+      allow delete: if isValidId(userId) && (
+        isOwner(userId) ||
+        (isSuperAdmin() && userId != request.auth.uid)
+      );
 
       // User's joined groups and DM index
       match /myChats/{chatId} {
-        allow get, list: if isOwner(userId);
+        allow get: if isValidId(userId) && isValidId(chatId) && (isOwner(userId) || isStaff());
+        allow list: if isOwner(userId) || isStaff();
 
         allow create: if isSignedIn() &&
           isValidId(userId) &&
@@ -405,6 +644,8 @@ service cloud.firestore {
 
         allow delete: if isSignedIn() && isValidId(userId) && isValidId(chatId) && (
           isOwner(userId) ||
+          isSuperAdmin() ||
+          canModRooms() ||
           (
             get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group' &&
             isGroupAdmin(chatId)
@@ -414,7 +655,8 @@ service cloud.firestore {
 
       // User's block list
       match /blocks/{blockedUserId} {
-        allow get, list: if isOwner(userId);
+        allow get: if isValidId(blockedUserId) && (isOwner(userId) || isStaff());
+        allow list: if isOwner(userId) || isStaff();
 
         allow create: if isOwner(userId) &&
           isValidId(userId) &&
@@ -424,13 +666,14 @@ service cloud.firestore {
           incoming().createdAt == request.time &&
           exists(/databases/$(database)/documents/profiles/$(blockedUserId));
 
-        allow delete: if isOwner(userId) && isValidId(blockedUserId);
+        allow delete: if isValidId(blockedUserId) && (isOwner(userId) || isSuperAdmin());
         allow update: if false;
       }
 
       // User's private nicknames for friends
       match /nicknames/{targetUserId} {
-        allow get, list: if isOwner(userId);
+        allow get: if isOwner(userId);
+        allow list: if isOwner(userId) || isSuperAdmin();
 
         allow create, update: if isOwner(userId) &&
           isValidId(userId) &&
@@ -440,12 +683,13 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           exists(/databases/$(database)/documents/profiles/$(targetUserId));
 
-        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(targetUserId);
+        allow delete: if isValidId(userId) && isValidId(targetUserId) && (isOwner(userId) || isSuperAdmin());
       }
 
       // User's favorite buddies
       match /favorites/{targetUserId} {
-        allow get, list: if isOwner(userId);
+        allow get: if isOwner(userId);
+        allow list: if isOwner(userId) || isSuperAdmin();
 
         allow create: if isOwner(userId) &&
           isValidId(userId) &&
@@ -455,7 +699,7 @@ service cloud.firestore {
           incoming().createdAt == request.time &&
           exists(/databases/$(database)/documents/profiles/$(targetUserId));
 
-        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(targetUserId);
+        allow delete: if isValidId(userId) && isValidId(targetUserId) && (isOwner(userId) || isSuperAdmin());
         allow update: if false;
       }
     }
@@ -464,7 +708,7 @@ service cloud.firestore {
     // Per-User Message Rate Limit (Max 5 messages per 10 seconds)
     // -------------------------------------------------------------------------
     match /rateLimits/{userId} {
-      allow get: if isOwner(userId) && isValidId(userId);
+      allow get: if isValidId(userId) && (isOwner(userId) || isStaff());
 
       allow create: if isOwner(userId) &&
         isValidId(userId) &&
@@ -488,7 +732,7 @@ service cloud.firestore {
           )
         );
 
-      allow delete: if isOwner(userId) && isValidId(userId);
+      allow delete: if isValidId(userId) && (isOwner(userId) || isSuperAdmin());
     }
 
     // -------------------------------------------------------------------------
@@ -496,11 +740,11 @@ service cloud.firestore {
     // -------------------------------------------------------------------------
     match /chats/{chatId} {
       allow get: if isSignedIn() && isValidId(chatId) && (
-        existing().type == 'group' || isChatMember(chatId)
+        existing().type == 'group' || isChatMember(chatId) || isStaff()
       );
 
-      // Only groups can be queried/listed globally; DMs cannot be listed here.
-      allow list: if isSignedIn() && existing().type == 'group';
+      // Regular users can only list groups; Staff may list chats for room/traffic metrics.
+      allow list: if isSignedIn() && (existing().type == 'group' || isStaff());
 
       allow create: if isSignedIn() &&
         isValidId(chatId) &&
@@ -557,6 +801,13 @@ service cloud.firestore {
             incoming().memberCount == existing().memberCount - 1 &&
             incoming().memberCount >= 1
           ) ||
+          // Super Admin decrements memberCount during user account deletion
+          (
+            isSuperAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['memberCount']) &&
+            incoming().memberCount >= 0 &&
+            incoming().memberCount <= existing().memberCount
+          ) ||
           // Member sends a message and updates latest message preview for notifications
           (
             isChatMember(chatId) &&
@@ -568,15 +819,16 @@ service cloud.firestore {
           )
         );
 
-      allow delete: if false;
+      allow delete: if isValidId(chatId) && canModRooms() && existing().type == 'group';
 
       match /members/{memberId} {
         allow get: if isSignedIn() && isValidId(chatId) && isValidId(memberId) && (
           isChatMember(chatId) ||
+          isStaff() ||
           get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group'
         );
 
-        allow list: if isSignedIn() && isChatMember(chatId);
+        allow list: if isSignedIn() && (isChatMember(chatId) || isStaff());
 
         allow create: if isSignedIn() &&
           isValidId(chatId) &&
@@ -621,6 +873,8 @@ service cloud.firestore {
 
         allow delete: if isSignedIn() && isValidId(chatId) && isValidId(memberId) && (
           isOwner(memberId) ||
+          isSuperAdmin() ||
+          canModRooms() ||
           (
             get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group' &&
             isGroupAdmin(chatId) &&
@@ -632,7 +886,10 @@ service cloud.firestore {
       }
 
       match /typing/{userId} {
-        allow get, list: if isSignedIn() && isChatMember(chatId);
+        allow get, list: if isSignedIn() && (
+          isChatMember(chatId) ||
+          (canModRooms() && get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group')
+        );
 
         allow create, update: if isOwner(userId) &&
           isValidId(chatId) &&
@@ -642,11 +899,16 @@ service cloud.firestore {
           isChatMember(chatId) &&
           !isUserBanned(userId);
 
-        allow delete: if isOwner(userId) && isValidId(chatId) && isValidId(userId);
+        allow delete: if isValidId(chatId) && isValidId(userId) && (
+          isOwner(userId) || isSuperAdmin() || canModRooms()
+        );
       }
 
       match /reactions/{reactionId} {
-        allow get, list: if isSignedIn() && isChatMember(chatId);
+        allow get, list: if isSignedIn() && (
+          isChatMember(chatId) ||
+          (canModRooms() && get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group')
+        );
 
         allow create, update: if isSignedIn() &&
           isValidId(chatId) &&
@@ -659,12 +921,17 @@ service cloud.firestore {
         allow delete: if isSignedIn() &&
           isValidId(chatId) &&
           isValidId(reactionId) &&
-          isChatMember(chatId) &&
-          existing().userId == request.auth.uid;
+          (
+            (isChatMember(chatId) && existing().userId == request.auth.uid) ||
+            canModRooms()
+          );
       }
 
       match /readReceipts/{userId} {
-        allow get, list: if isSignedIn() && isChatMember(chatId);
+        allow get, list: if isSignedIn() && (
+          isChatMember(chatId) ||
+          (canModRooms() && get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group')
+        );
 
         allow create: if isOwner(userId) &&
           isValidId(chatId) &&
@@ -686,16 +953,19 @@ service cloud.firestore {
           ) &&
           isChatMember(chatId);
 
-        allow delete: if isOwner(userId) && isValidId(chatId) && isValidId(userId);
+        allow delete: if isValidId(chatId) && isValidId(userId) && (
+          isOwner(userId) || isSuperAdmin() || canModRooms()
+        );
       }
 
       match /joinRequests/{requesterId} {
         allow get: if isSignedIn() && isValidId(chatId) && isValidId(requesterId) && (
           request.auth.uid == requesterId ||
-          isGroupAdmin(chatId)
+          isGroupAdmin(chatId) ||
+          canModRooms()
         );
 
-        allow list: if isSignedIn() && isGroupAdmin(chatId);
+        allow list: if isSignedIn() && (isGroupAdmin(chatId) || canModRooms());
 
         allow create: if isOwner(requesterId) &&
           isValidId(chatId) &&
@@ -732,12 +1002,17 @@ service cloud.firestore {
 
         allow delete: if isSignedIn() && isValidId(chatId) && isValidId(requesterId) && (
           request.auth.uid == requesterId ||
-          isGroupAdmin(chatId)
+          isGroupAdmin(chatId) ||
+          canModRooms()
         );
       }
 
       match /messages/{messageId} {
-        allow get, list: if isSignedIn() && isChatMember(chatId);
+        allow get: if isSignedIn() && isChatMember(chatId);
+        allow list: if isSignedIn() && (
+          isChatMember(chatId) ||
+          (canModRooms() && get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group')
+        );
 
         allow create: if isSignedIn() &&
           isValidId(chatId) &&
@@ -753,8 +1028,10 @@ service cloud.firestore {
         allow delete: if isSignedIn() &&
           isValidId(chatId) &&
           isValidId(messageId) &&
-          isChatMember(chatId) &&
-          existing().senderId == request.auth.uid;
+          (
+            (isChatMember(chatId) && existing().senderId == request.auth.uid) ||
+            (canModRooms() && get(/databases/$(database)/documents/chats/$(chatId)).data.type == 'group')
+          );
 
         match /views/{viewerId} {
           allow get: if isOwner(viewerId) && isValidId(chatId) && isValidId(messageId) && isValidId(viewerId) && isChatMember(chatId);
@@ -793,16 +1070,36 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------------------
-    // Moderation Reports (Write-Only for Authenticated Users)
+    // Moderation Reports (Create-Only for Users, Triage for Staff)
     // -------------------------------------------------------------------------
     match /reports/{reportId} {
       allow create: if isSignedIn() &&
         isValidId(reportId) &&
         isValidReport(incoming()) &&
+        incoming().reporterId == request.auth.uid &&
+        (!('status' in incoming()) || incoming().status == 'pending') &&
+        (!('resolvedBy' in incoming()) || incoming().resolvedBy == null) &&
+        (!('resolvedAt' in incoming()) || incoming().resolvedAt == null) &&
         incoming().createdAt == request.time;
 
-      allow get, list: if isAdmin();
-      allow update, delete: if false;
+      allow get: if isStaff() && isValidId(reportId);
+      allow list: if isStaff();
+
+      allow update: if canModReports() &&
+        isValidId(reportId) &&
+        isValidReport(incoming()) &&
+        incoming().reporterId == existing().reporterId &&
+        incoming().reportedUserId == existing().reportedUserId &&
+        incoming().chatId == existing().chatId &&
+        incoming().messageId == existing().messageId &&
+        incoming().reason == existing().reason &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'resolvedBy', 'resolvedByUsername', 'resolutionNote', 'resolvedAt']) &&
+        incoming().status in ['pending', 'resolved', 'dismissed'] &&
+        incoming().resolvedBy == request.auth.uid &&
+        incoming().resolvedAt == request.time;
+
+      allow delete: if isSuperAdmin() && isValidId(reportId);
     }
   }
 }
