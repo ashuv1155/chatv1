@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
 import {
   Bell,
+  CheckCheck,
   Clock,
   Lock,
   MessageSquare,
@@ -20,17 +21,20 @@ import { ReportModal } from './components/ReportModal';
 import { SettingsScreen } from './components/SettingsScreen';
 import { Sidebar } from './components/Sidebar';
 import { TermsPrivacyScreen } from './components/TermsPrivacyScreen';
+import { UsernameOnboardingScreen } from './components/UsernameOnboardingScreen';
 import {
   addFavoriteUser,
   blockUser,
   createGroup,
+  createInitialUserProfile,
   deleteOwnAccount,
-  ensureUserProfile,
   fetchBlocks,
+  fetchOwnProfile,
   fetchUnreadCountForChat,
   getDisplayName,
   joinGroup,
   leaveGroup,
+  markChatDelivered,
   markChatRead,
   removeChatFromMyList,
   removeFavoriteUser,
@@ -42,8 +46,9 @@ import {
   startDm,
   submitReport,
   subscribeToAdminJoinRequests,
+  subscribeToChatUpdates,
+  subscribeToChatsReadReceipts,
   subscribeToFavorites,
-  subscribeToGroupUpdates,
   subscribeToMyChats,
   subscribeToNicknames,
   unblockUser,
@@ -63,7 +68,9 @@ import type {
   AppNotification,
   AppScreen,
   BlockEntry,
+  ChatReadReceipt,
   ChatSummary,
+  DeliveryStatus,
   FavoriteEntry,
   GroupVisibility,
   NotificationSettings,
@@ -101,6 +108,7 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [needsUsernameOnboarding, setNeedsUsernameOnboarding] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(false);
 
   const [screen, setScreen] = useState<AppScreen>('chat');
@@ -116,6 +124,7 @@ export default function App() {
   const [favorites, setFavorites] = useState<FavoriteEntry[]>([]);
   const [nicknames, setNicknames] = useState<Record<string, string>>({});
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  const [readReceiptsByChat, setReadReceiptsByChat] = useState<Record<string, ChatReadReceipt[]>>({});
 
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [notificationToast, setNotificationToast] = useState<AppNotification | null>(null);
@@ -154,17 +163,22 @@ export default function App() {
 
   const chats = useMemo(() => {
     const merged = myChatLinks.map((c) => {
-      if (c.type !== 'group') return c;
       const meta = groupMetaMap[c.id];
       if (!meta) return c;
       const linkTime = c.lastMessageAt ? new Date(c.lastMessageAt).getTime() : 0;
       const metaTime = meta.lastMessageAt ? new Date(meta.lastMessageAt).getTime() : 0;
-      const useMetaMsg = metaTime >= linkTime && Boolean(meta.lastMessageAt);
+      const useMetaMsg =
+        Boolean(meta.lastMessageAt) &&
+        (metaTime >= linkTime - 5000 || !c.lastMessageAt);
       return {
         ...c,
-        createdBy: meta.createdBy ?? c.createdBy,
-        visibility: meta.visibility,
-        memberCount: meta.memberCount,
+        ...(c.type === 'group'
+          ? {
+              createdBy: meta.createdBy ?? c.createdBy,
+              visibility: meta.visibility,
+              memberCount: meta.memberCount,
+            }
+          : {}),
         lastMessageAt: useMetaMsg ? meta.lastMessageAt : c.lastMessageAt,
         lastMessagePreview: useMetaMsg ? meta.lastMessagePreview : c.lastMessagePreview,
         lastSenderId: useMetaMsg ? meta.lastSenderId : c.lastSenderId,
@@ -227,10 +241,14 @@ export default function App() {
   }, [nicknames]);
 
   // Track tab visibility / focus for smart browser notifications and read marking
+  const [focusTick, setFocusTick] = useState(0);
   useEffect(() => {
     const syncVisibility = () => {
       setTabHidden(document.hidden);
       setBrowserNotifPermission(getBrowserNotificationPermission());
+      if (!document.hidden) {
+        setFocusTick((t) => t + 1);
+      }
     };
     document.addEventListener('visibilitychange', syncVisibility);
     window.addEventListener('focus', syncVisibility);
@@ -359,11 +377,11 @@ export default function App() {
     [profile],
   );
 
-  // Mark active chat as read on chat open or when returning to tab
+  // Mark active chat as read on chat open, tab return, or window focus
   useEffect(() => {
     if (!profile || !activeChatId || screen !== 'chat' || tabHidden) return;
     handleChatViewed(activeChatId);
-  }, [profile, activeChatId, screen, tabHidden, handleChatViewed]);
+  }, [profile, activeChatId, screen, tabHidden, focusTick, handleChatViewed]);
 
   // Auth listener
   useEffect(() => {
@@ -373,12 +391,14 @@ export default function App() {
 
       if (!user) {
         setProfile(null);
+        setNeedsUsernameOnboarding(false);
         setMyChatLinks([]);
         setGroupMetaMap({});
         setBlocks([]);
         setFavorites([]);
         setNicknames({});
         setUnreadCounts({});
+        setReadReceiptsByChat({});
         setNotifications([]);
         setNotificationToast(null);
         setActiveChatId(null);
@@ -396,10 +416,16 @@ export default function App() {
       setBootstrapping(true);
       setAuthError(null);
       try {
-        const userProfile = await ensureUserProfile(user);
-        setProfile(userProfile);
-        const blockRows = await fetchBlocks(user.uid);
-        setBlocks(blockRows);
+        const userProfile = await fetchOwnProfile(user.uid);
+        if (!userProfile) {
+          setProfile(null);
+          setNeedsUsernameOnboarding(true);
+        } else {
+          setProfile(userProfile);
+          setNeedsUsernameOnboarding(false);
+          const blockRows = await fetchBlocks(user.uid);
+          setBlocks(blockRows);
+        }
       } catch (err) {
         let message = err instanceof Error ? err.message : 'Unable to finish anonymous sign-in.';
         try {
@@ -447,11 +473,53 @@ export default function App() {
 
       if (!myChatsInitializedRef.current) {
         myChatsInitializedRef.current = true;
+        const initialUnreadNotifs: AppNotification[] = [];
         for (const c of incoming) {
           knownChatIdsRef.current.add(c.id);
           if (c.lastMessageAt) {
             lastMsgTimestampByChatRef.current.set(c.id, c.lastMessageAt);
           }
+          if (
+            c.lastMessageAt &&
+            c.lastSenderId &&
+            c.lastSenderId !== profile.id &&
+            !blockedIdsRef.current.has(c.lastSenderId)
+          ) {
+            const msgMs = new Date(c.lastMessageAt).getTime();
+            const readMs = c.lastReadAt ? new Date(c.lastReadAt).getTime() : 0;
+            if (msgMs > readMs) {
+              void markChatDelivered(profile.id, c.id);
+              if (!c.muted && !c.archived) {
+                const title =
+                  c.type === 'dm'
+                    ? getDisplayName(
+                        c.partner?.id ?? c.lastSenderId,
+                        c.partner?.username ?? c.lastSenderUsername ?? 'Direct chat',
+                        nicknamesRef.current,
+                      )
+                    : c.name ?? 'Group';
+                const dedupeKey = `message:${c.id}:${c.lastMessageAt}:${title}`;
+                notifiedKeysRef.current.add(dedupeKey);
+                initialUnreadNotifs.push({
+                  id: dedupeKey,
+                  chatId: c.id,
+                  kind: 'message',
+                  title,
+                  body: c.lastMessagePreview ?? 'New message',
+                  senderUsername: c.partner?.username ?? c.lastSenderUsername ?? undefined,
+                  senderColor: c.partner?.color,
+                  createdAt: c.lastMessageAt,
+                  read: false,
+                });
+              }
+            }
+          }
+        }
+        if (initialUnreadNotifs.length > 0) {
+          initialUnreadNotifs.sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+          );
+          setNotifications((prev) => (prev.length === 0 ? initialUnreadNotifs.slice(0, 30) : prev));
         }
         return;
       }
@@ -480,6 +548,17 @@ export default function App() {
           const prevTs = lastMsgTimestampByChatRef.current.get(c.id);
           if (c.lastMessageAt !== prevTs) {
             lastMsgTimestampByChatRef.current.set(c.id, c.lastMessageAt);
+            const isLookingAtChat =
+              c.id === activeChatIdRef.current &&
+              screenRef.current === 'chat' &&
+              !document.hidden;
+
+            if (isLookingAtChat) {
+              void markChatRead(profile.id, c.id);
+            } else {
+              void markChatDelivered(profile.id, c.id);
+            }
+
             if (!c.muted) {
               const senderDisplay = getDisplayName(
                 c.partner?.id ?? c.lastSenderId,
@@ -504,35 +583,95 @@ export default function App() {
     return () => unsub();
   }, [profile, triggerNotification]);
 
-  // Real-time listener on joined groups for latest messages, member counts, and admin info
-  const joinedGroupIdsKey = useMemo(
+  // Real-time listener for delivery & read receipts + canonical chat metadata across active chats
+  const trackedChatIdsKey = useMemo(
     () =>
-      myChatLinks
-        .filter((c) => c.type === 'group')
+      [...myChatLinks]
+        .filter((c) => !c.archived)
+        .sort(
+          (a, b) =>
+            new Date(b.lastMessageAt ?? b.createdAt).getTime() -
+            new Date(a.lastMessageAt ?? a.createdAt).getTime(),
+        )
+        .slice(0, 30)
         .map((c) => c.id)
-        .sort()
         .join(','),
     [myChatLinks],
   );
 
   useEffect(() => {
-    if (!profile || !joinedGroupIdsKey) return;
-    const groupIds = joinedGroupIdsKey.split(',').filter(Boolean);
+    if (!profile || !trackedChatIdsKey) return;
+    const chatIds = trackedChatIdsKey.split(',').filter(Boolean);
 
-    const unsub = subscribeToGroupUpdates(groupIds, (chatId, update, isInitial) => {
+    const unsub = subscribeToChatUpdates(chatIds, (chatId, update, isInitial) => {
       setGroupMetaMap((prev) => ({
         ...prev,
         [chatId]: update,
       }));
 
+      const targetChat = chatsRef.current.find((c) => c.id === chatId);
+      const isGroup = targetChat?.type === 'group';
+
       if (isInitial) {
         if (update.lastMessageAt) {
           lastMsgTimestampByChatRef.current.set(chatId, update.lastMessageAt);
+        }
+        if (
+          isGroup &&
+          update.lastMessageAt &&
+          update.lastSenderId &&
+          update.lastSenderId !== profile.id &&
+          !blockedIdsRef.current.has(update.lastSenderId)
+        ) {
+          const msgMs = new Date(update.lastMessageAt).getTime();
+          const readMs = targetChat?.lastReadAt ? new Date(targetChat.lastReadAt).getTime() : 0;
+          if (msgMs > readMs) {
+            const isLookingAtChat =
+              chatId === activeChatIdRef.current &&
+              screenRef.current === 'chat' &&
+              !document.hidden;
+            if (isLookingAtChat) {
+              void markChatRead(profile.id, chatId);
+            } else {
+              void markChatDelivered(profile.id, chatId);
+              if (!targetChat?.muted && !targetChat?.archived) {
+                const groupTitle = targetChat?.name ?? 'Group';
+                const senderDisplay = update.lastSenderUsername
+                  ? getDisplayName(
+                      update.lastSenderId,
+                      update.lastSenderUsername,
+                      nicknamesRef.current,
+                    )
+                  : null;
+                const senderPrefix = senderDisplay ? `${senderDisplay}: ` : '';
+                const dedupeKey = `message:${chatId}:${update.lastMessageAt}:${groupTitle}`;
+                if (!notifiedKeysRef.current.has(dedupeKey)) {
+                  notifiedKeysRef.current.add(dedupeKey);
+                  setNotifications((prev) =>
+                    [
+                      {
+                        id: dedupeKey,
+                        chatId,
+                        kind: 'message' as const,
+                        title: groupTitle,
+                        body: `${senderPrefix}${update.lastMessagePreview ?? 'New message'}`,
+                        senderUsername: update.lastSenderUsername ?? undefined,
+                        createdAt: update.lastMessageAt!,
+                        read: false,
+                      },
+                      ...prev,
+                    ].slice(0, 30),
+                  );
+                }
+              }
+            }
+          }
         }
         return;
       }
 
       if (
+        isGroup &&
         update.lastMessageAt &&
         update.lastSenderId &&
         update.lastSenderId !== profile.id &&
@@ -541,9 +680,19 @@ export default function App() {
         const prevTs = lastMsgTimestampByChatRef.current.get(chatId);
         if (update.lastMessageAt !== prevTs) {
           lastMsgTimestampByChatRef.current.set(chatId, update.lastMessageAt);
-          const groupChat = chatsRef.current.find((c) => c.id === chatId);
-          if (!groupChat?.muted) {
-            const groupTitle = groupChat?.name ?? 'Group';
+          const isLookingAtChat =
+            chatId === activeChatIdRef.current &&
+            screenRef.current === 'chat' &&
+            !document.hidden;
+
+          if (isLookingAtChat) {
+            void markChatRead(profile.id, chatId);
+          } else {
+            void markChatDelivered(profile.id, chatId);
+          }
+
+          if (!targetChat?.muted) {
+            const groupTitle = targetChat?.name ?? 'Group';
             const senderDisplay = update.lastSenderUsername
               ? getDisplayName(update.lastSenderId, update.lastSenderUsername, nicknamesRef.current)
               : null;
@@ -562,7 +711,7 @@ export default function App() {
     });
 
     return () => unsub();
-  }, [profile, joinedGroupIdsKey, triggerNotification]);
+  }, [profile, trackedChatIdsKey, triggerNotification]);
 
   // Real-time listener for pending join requests on private groups owned by current user
   const ownedPrivateGroupIdsKey = useMemo(
@@ -612,6 +761,49 @@ export default function App() {
 
     return () => unsub();
   }, [profile, ownedPrivateGroupIdsKey, triggerNotification]);
+
+  useEffect(() => {
+    if (!profile || !trackedChatIdsKey) {
+      setReadReceiptsByChat({});
+      return;
+    }
+    const chatIds = trackedChatIdsKey.split(',').filter(Boolean);
+    return subscribeToChatsReadReceipts(chatIds, (chatId, receipts) => {
+      setReadReceiptsByChat((prev) => ({
+        ...prev,
+        [chatId]: receipts,
+      }));
+    });
+  }, [profile, trackedChatIdsKey]);
+
+  const chatDeliveryStatus = useMemo(() => {
+    const statusMap: Record<string, DeliveryStatus> = {};
+    if (!profile) return statusMap;
+
+    for (const chat of chats) {
+      if (chat.lastSenderId !== profile.id || !chat.lastMessageAt) continue;
+      const msgMs = new Date(chat.lastMessageAt).getTime();
+      if (Number.isNaN(msgMs)) continue;
+
+      const receipts = readReceiptsByChat[chat.id] ?? [];
+      let seen = false;
+      let delivered = false;
+      for (const r of receipts) {
+        if (r.userId === profile.id) continue;
+        const readMs = r.lastReadAt ? new Date(r.lastReadAt).getTime() : 0;
+        const delivMs = r.lastDeliveredAt ? new Date(r.lastDeliveredAt).getTime() : 0;
+        if (!Number.isNaN(readMs) && readMs >= msgMs) {
+          seen = true;
+          break;
+        }
+        if (!Number.isNaN(delivMs) && delivMs >= msgMs) {
+          delivered = true;
+        }
+      }
+      statusMap[chat.id] = seen ? 'seen' : delivered ? 'delivered' : 'sent';
+    }
+    return statusMap;
+  }, [chats, profile, readReceiptsByChat]);
 
   const unreadChatIds = useMemo(() => {
     const set = new Set<string>();
@@ -703,6 +895,22 @@ export default function App() {
 
   const handleSignOut = async () => {
     await signOutFirebase();
+  };
+
+  const handleCompleteUsernameOnboarding = async (params: {
+    username: string;
+    bio: string;
+    color: string;
+  }) => {
+    if (!firebaseUser) return;
+    const createdProfile = await createInitialUserProfile(firebaseUser, params.username, {
+      bio: params.bio,
+      color: params.color,
+    });
+    setProfile(createdProfile);
+    setNeedsUsernameOnboarding(false);
+    const blockRows = await fetchBlocks(firebaseUser.uid);
+    setBlocks(blockRows);
   };
 
   const handleCreateGroup = async (
@@ -895,7 +1103,7 @@ export default function App() {
     setScreen('profile');
   };
 
-  if (!authReady || (firebaseUser && bootstrapping && !profile)) {
+  if (!authReady || (firebaseUser && bootstrapping && !profile && !needsUsernameOnboarding)) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-black text-slate-900 dark:text-neutral-100 flex items-center justify-center p-6">
         <div className="text-center space-y-2">
@@ -905,6 +1113,15 @@ export default function App() {
           </p>
         </div>
       </div>
+    );
+  }
+
+  if (firebaseUser && needsUsernameOnboarding && !profile) {
+    return (
+      <UsernameOnboardingScreen
+        onComplete={handleCompleteUsernameOnboarding}
+        onSwitchAccount={handleSignOut}
+      />
     );
   }
 
@@ -992,11 +1209,13 @@ export default function App() {
               favoriteUserIds={favoriteUserIds}
               unreadChatIds={unreadChatIds}
               unreadCounts={unreadCounts}
+              chatDeliveryStatus={chatDeliveryStatus}
               notifications={notifications}
               blockedUserIds={blockedUserIds}
               activeChatId={activeChatId}
               loadingChats={loadingChats}
               onSelectChat={(id) => setActiveChatId(id || null)}
+              onMarkChatRead={handleChatViewed}
               onOpenNotification={handleOpenNotification}
               onMarkAllNotificationsRead={() =>
                 setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))
@@ -1209,8 +1428,14 @@ export default function App() {
             onClick={() => handleOpenNotification(notificationToast)}
             className="min-w-0 flex-1 text-left"
           >
-            <p className="text-xs font-semibold truncate">{notificationToast.title}</p>
-            <p className="text-xs text-slate-500 dark:text-neutral-400 line-clamp-2 mt-0.5">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-semibold truncate">{notificationToast.title}</p>
+              <span className="inline-flex items-center gap-0.5 text-[10px] font-medium text-slate-500 dark:text-neutral-400 shrink-0">
+                <CheckCheck className="w-3.5 h-3.5 text-[#2B84F6]" aria-hidden="true" />
+                <span>Delivered</span>
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-neutral-400 line-clamp-2 break-words [overflow-wrap:anywhere] mt-0.5">
               {notificationToast.body}
             </p>
           </button>

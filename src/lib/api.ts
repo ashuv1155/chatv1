@@ -84,6 +84,10 @@ function generateUsername(): string {
   return `${adj}${noun}${digits}`;
 }
 
+export function generateSuggestedUsername(): string {
+  return generateUsername();
+}
+
 function generateColor(): string {
   return COLORS[randomIndex(COLORS.length)];
 }
@@ -182,30 +186,70 @@ function mapMessageDoc(
   };
 }
 
-export async function ensureUserProfile(user: User): Promise<Profile> {
+export async function fetchOwnProfile(uid: string): Promise<Profile | null> {
+  const db = getFirestoreDb();
+  const path = `profiles/${uid}`;
+  try {
+    const snap = await getDoc(doc(db, 'profiles', uid));
+    if (!snap.exists()) return null;
+    return mapProfileData(uid, snap.data());
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, path);
+  }
+}
+
+export async function createInitialUserProfile(
+  user: User,
+  chosenUsernameRaw: string,
+  options?: { bio?: string; color?: string },
+): Promise<Profile> {
+  const username = validateUsernameInput(chosenUsernameRaw);
+  const bio = String(options?.bio ?? '').trim().slice(0, 240);
+  const requestedColor = options?.color ?? '';
+  const color = COLORS.includes(requestedColor) ? requestedColor : generateColor();
+
   const db = getFirestoreDb();
   const path = `profiles/${user.uid}`;
   const profileRef = doc(db, 'profiles', user.uid);
 
-  let snap;
+  let existingSnap;
   try {
-    snap = await getDoc(profileRef);
+    existingSnap = await getDoc(profileRef);
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
   }
 
-  if (snap.exists()) {
-    return mapProfileData(user.uid, snap.data());
+  if (existingSnap.exists()) {
+    return mapProfileData(user.uid, existingSnap.data());
   }
 
-  const username = generateUsername();
-  const color = generateColor();
+  // Prevent accidental duplicate usernames across active accounts
+  try {
+    const existingList = await getDocs(
+      query(collection(db, 'profiles'), where('banned', '==', false), limit(100)),
+    );
+    const normalizedTarget = username.toLowerCase();
+    const conflict = existingList.docs.some(
+      (d) =>
+        d.id !== user.uid &&
+        String(d.data().username ?? '').toLowerCase() === normalizedTarget,
+    );
+    if (conflict) {
+      throw new Error('That username is already taken. Try another one.');
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('already taken')) {
+      throw err;
+    }
+    // ignore transient list lookup errors and let rules enforce validity
+  }
+
   try {
     await setDoc(profileRef, {
       uid: user.uid,
       username,
       color,
-      bio: '',
+      bio,
       avatarUrl: null,
       usernameHistory: [],
       banned: false,
@@ -220,13 +264,19 @@ export async function ensureUserProfile(user: User): Promise<Profile> {
     id: user.uid,
     username,
     color,
-    bio: '',
+    bio,
     avatarUrl: null,
     usernameHistory: [],
     banned: false,
     lastUsernameChangeAt: null,
     createdAt: new Date().toISOString(),
   };
+}
+
+export async function ensureUserProfile(user: User): Promise<Profile> {
+  const existing = await fetchOwnProfile(user.uid);
+  if (existing) return existing;
+  return createInitialUserProfile(user, generateUsername());
 }
 
 export async function fetchProfileById(uid: string): Promise<Profile | null> {
@@ -438,9 +488,9 @@ export function subscribeToMyChats(
   );
 }
 
-export function subscribeToGroupUpdates(
-  groupIds: string[],
-  onGroupUpdate: (
+export function subscribeToChatUpdates(
+  chatIds: string[],
+  onChatUpdate: (
     chatId: string,
     update: {
       createdBy: string | null;
@@ -455,7 +505,7 @@ export function subscribeToGroupUpdates(
   ) => void,
 ): () => void {
   const db = getFirestoreDb();
-  const unsubs = groupIds.slice(0, 25).map((chatId) => {
+  const unsubs = chatIds.slice(0, 30).map((chatId) => {
     let firstSnap = true;
     return onSnapshot(
       doc(db, 'chats', chatId),
@@ -464,7 +514,7 @@ export function subscribeToGroupUpdates(
         const data = snap.data();
         const isInitial = firstSnap;
         firstSnap = false;
-        onGroupUpdate(
+        onChatUpdate(
           chatId,
           {
             createdBy: data.createdBy ? String(data.createdBy) : null,
@@ -479,7 +529,7 @@ export function subscribeToGroupUpdates(
         );
       },
       () => {
-        // Ignore transient permission errors if user just left a group
+        // Ignore transient permission errors if membership just changed
       },
     );
   });
@@ -488,6 +538,8 @@ export function subscribeToGroupUpdates(
     for (const unsub of unsubs) unsub();
   };
 }
+
+export const subscribeToGroupUpdates = subscribeToChatUpdates;
 
 export function subscribeToAdminJoinRequests(
   groupIds: string[],
@@ -529,6 +581,30 @@ export function subscribeToAdminJoinRequests(
   };
 }
 
+export async function markChatDelivered(uid: string, chatId: string): Promise<void> {
+  const db = getFirestoreDb();
+  const receiptRef = doc(db, 'chats', chatId, 'readReceipts', uid);
+  try {
+    const snap = await getDoc(receiptRef);
+    if (snap.exists()) {
+      const existingData = snap.data();
+      await updateDoc(receiptRef, {
+        userId: uid,
+        lastReadAt: existingData.lastReadAt ?? null,
+        lastDeliveredAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(receiptRef, {
+        userId: uid,
+        lastReadAt: null,
+        lastDeliveredAt: serverTimestamp(),
+      });
+    }
+  } catch {
+    // Best-effort delivery acknowledgement; ignore if membership just changed
+  }
+}
+
 export async function markChatRead(uid: string, chatId: string): Promise<void> {
   const db = getFirestoreDb();
   await Promise.allSettled([
@@ -539,6 +615,7 @@ export async function markChatRead(uid: string, chatId: string): Promise<void> {
     setDoc(doc(db, 'chats', chatId, 'readReceipts', uid), {
       userId: uid,
       lastReadAt: serverTimestamp(),
+      lastDeliveredAt: serverTimestamp(),
     }),
   ]);
 }
@@ -1556,9 +1633,12 @@ export function subscribeToReadReceipts(
     (snapshot) => {
       const list: ChatReadReceipt[] = snapshot.docs.map((docSnap) => {
         const data = docSnap.data();
+        const lastReadAt = toNullableIso(data.lastReadAt);
+        const lastDeliveredAt = toNullableIso(data.lastDeliveredAt ?? data.lastReadAt);
         return {
           userId: String(data.userId ?? docSnap.id),
-          lastReadAt: toIso(data.lastReadAt),
+          lastDeliveredAt,
+          lastReadAt,
         };
       });
       onReceipts(list);
@@ -1567,6 +1647,37 @@ export function subscribeToReadReceipts(
       onReceipts([]);
     },
   );
+}
+
+export function subscribeToChatsReadReceipts(
+  chatIds: string[],
+  onReceiptsByChat: (chatId: string, receipts: ChatReadReceipt[]) => void,
+): () => void {
+  const db = getFirestoreDb();
+  const unsubs = chatIds.slice(0, 30).map((chatId) =>
+    onSnapshot(
+      collection(db, 'chats', chatId, 'readReceipts'),
+      (snapshot) => {
+        const list: ChatReadReceipt[] = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data();
+          const lastReadAt = toNullableIso(data.lastReadAt);
+          const lastDeliveredAt = toNullableIso(data.lastDeliveredAt ?? data.lastReadAt);
+          return {
+            userId: String(data.userId ?? docSnap.id),
+            lastDeliveredAt,
+            lastReadAt,
+          };
+        });
+        onReceiptsByChat(chatId, list);
+      },
+      () => {
+        // ignore transient errors when leaving a chat
+      },
+    ),
+  );
+  return () => {
+    for (const unsub of unsubs) unsub();
+  };
 }
 
 export async function fetchAttachmentBlobUrl(

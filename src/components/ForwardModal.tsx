@@ -100,11 +100,11 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
         </div>
 
         <div className="px-5 pt-3 pb-2 space-y-3">
-          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/[0.08]">
-            <p className="text-xs font-medium text-slate-500 dark:text-neutral-400">
+          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/[0.08] min-w-0 overflow-hidden">
+            <p className="text-xs font-medium text-slate-500 dark:text-neutral-400 truncate">
               From {getDisplayName(message.senderId, message.senderUsername, nicknames)}
             </p>
-            <p className="text-sm text-slate-800 dark:text-neutral-200 line-clamp-2 mt-0.5">
+            <p className="text-sm text-slate-800 dark:text-neutral-200 line-clamp-2 break-words [overflow-wrap:anywhere] mt-0.5">
               {forwardBody}
             </p>
           </div>

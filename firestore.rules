@@ -236,10 +236,11 @@ service cloud.firestore {
     }
 
     function isValidReadReceipt(data, userId) {
-      return data.keys().hasAll(['userId', 'lastReadAt']) &&
-        data.keys().hasOnly(['userId', 'lastReadAt']) &&
+      return data.keys().hasAll(['userId', 'lastDeliveredAt']) &&
+        data.keys().hasOnly(['userId', 'lastReadAt', 'lastDeliveredAt']) &&
         data.userId is string && data.userId == userId &&
-        data.lastReadAt is timestamp;
+        data.lastDeliveredAt is timestamp &&
+        (!('lastReadAt' in data) || data.lastReadAt == null || data.lastReadAt is timestamp);
     }
 
     function isValidMessage(data) {
@@ -665,11 +666,24 @@ service cloud.firestore {
       match /readReceipts/{userId} {
         allow get, list: if isSignedIn() && isChatMember(chatId);
 
-        allow create, update: if isOwner(userId) &&
+        allow create: if isOwner(userId) &&
           isValidId(chatId) &&
           isValidId(userId) &&
           isValidReadReceipt(incoming(), userId) &&
-          incoming().lastReadAt == request.time &&
+          incoming().lastDeliveredAt == request.time &&
+          (!('lastReadAt' in incoming()) || incoming().lastReadAt == null || incoming().lastReadAt == request.time) &&
+          isChatMember(chatId);
+
+        allow update: if isOwner(userId) &&
+          isValidId(chatId) &&
+          isValidId(userId) &&
+          isValidReadReceipt(incoming(), userId) &&
+          incoming().lastDeliveredAt == request.time &&
+          (
+            incoming().lastReadAt == request.time ||
+            (!('lastReadAt' in existing()) && (!('lastReadAt' in incoming()) || incoming().lastReadAt == null)) ||
+            ('lastReadAt' in existing() && incoming().lastReadAt == existing().lastReadAt)
+          ) &&
           isChatMember(chatId);
 
         allow delete: if isOwner(userId) && isValidId(chatId) && isValidId(userId);

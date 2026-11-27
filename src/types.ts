@@ -96,9 +96,12 @@ export interface MessageReaction {
   updatedAt: string;
 }
 
+export type DeliveryStatus = 'sent' | 'delivered' | 'seen';
+
 export interface ChatReadReceipt {
   userId: string;
-  lastReadAt: string;
+  lastDeliveredAt: string | null;
+  lastReadAt: string | null;
 }
 
 export interface ChatMessage {

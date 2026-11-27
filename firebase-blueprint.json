@@ -185,13 +185,14 @@
     },
     "ChatReadReceipt": {
       "title": "ChatReadReceipt",
-      "description": "Per-member read timestamp inside a chat for real-time read indicators.",
+      "description": "Per-member delivery and read timestamps inside a chat for real-time Sent/Delivered/Seen indicators.",
       "type": "object",
       "properties": {
         "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "lastDeliveredAt": { "type": "string", "format": "date-time" },
         "lastReadAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userId", "lastReadAt"]
+      "required": ["userId", "lastDeliveredAt"]
     },
     "MessageView": {
       "title": "MessageView",

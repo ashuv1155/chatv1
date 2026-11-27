@@ -3,6 +3,7 @@ import {
   Archive,
   Bell,
   BellOff,
+  Check,
   CheckCheck,
   Clock,
   Hash,
@@ -34,6 +35,7 @@ import {
 import type {
   AppNotification,
   ChatSummary,
+  DeliveryStatus,
   GroupSearchResult,
   JoinRequestStatus,
   Profile,
@@ -46,11 +48,13 @@ interface SidebarProps {
   favoriteUserIds: Set<string>;
   unreadChatIds: Set<string>;
   unreadCounts: Record<string, number>;
+  chatDeliveryStatus: Record<string, DeliveryStatus>;
   notifications: AppNotification[];
   blockedUserIds: Set<string>;
   activeChatId: string | null;
   loadingChats: boolean;
   onSelectChat: (chatId: string) => void;
+  onMarkChatRead: (chatId: string) => void;
   onOpenNotification: (notif: AppNotification) => void;
   onMarkAllNotificationsRead: () => void;
   onClearNotifications: () => void;
@@ -94,11 +98,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   favoriteUserIds,
   unreadChatIds,
   unreadCounts,
+  chatDeliveryStatus,
   notifications,
   blockedUserIds,
   activeChatId,
   loadingChats,
   onSelectChat,
+  onMarkChatRead,
   onOpenNotification,
   onMarkAllNotificationsRead,
   onClearNotifications,
@@ -537,9 +543,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 {formatShortTime(item.createdAt)}
                               </span>
                             </div>
-                            <p className="text-xs text-slate-500 dark:text-neutral-400 line-clamp-2 mt-0.5">
+                            <p className="text-xs text-slate-500 dark:text-neutral-400 line-clamp-2 break-words [overflow-wrap:anywhere] mt-0.5">
                               {item.body}
                             </p>
+                            <div className="flex items-center gap-1.5 mt-1">
+                              {item.read ? (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-[#2B84F6]">
+                                  <CheckCheck className="w-3.5 h-3.5 text-[#2B84F6]" aria-hidden="true" />
+                                  <span>Seen</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500 dark:text-neutral-300">
+                                  <CheckCheck className="w-3.5 h-3.5 text-slate-400 dark:text-neutral-400" aria-hidden="true" />
+                                  <span>Delivered · New</span>
+                                </span>
+                              )}
+                            </div>
                           </div>
 
                           {!item.read && (
@@ -866,7 +885,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 }`}
                               >
                                 {sentByMe && chat.lastMessagePreview && (
-                                  <CheckCheck className="w-3.5 h-3.5 text-[#2B84F6] shrink-0" />
+                                  chatDeliveryStatus[chat.id] === 'seen' ? (
+                                    <CheckCheck
+                                      className="w-3.5 h-3.5 text-[#2B84F6] shrink-0"
+                                      aria-label="Seen"
+                                    />
+                                  ) : chatDeliveryStatus[chat.id] === 'delivered' ? (
+                                    <CheckCheck
+                                      className="w-3.5 h-3.5 text-slate-400 dark:text-neutral-500 shrink-0"
+                                      aria-label="Delivered"
+                                    />
+                                  ) : (
+                                    <Check
+                                      className="w-3.5 h-3.5 text-slate-400 dark:text-neutral-500 shrink-0"
+                                      aria-label="Sent"
+                                    />
+                                  )
                                 )}
                                 <span className="truncate">{previewText}</span>
                               </p>
@@ -958,7 +992,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             type="button"
                             onClick={() => {
                               setRowMenuChatId(null);
-                              void onUpdateChatPrefs(chat.id, { markedUnread: !isUnread });
+                              if (isUnread) {
+                                onMarkChatRead(chat.id);
+                              } else {
+                                void onUpdateChatPrefs(chat.id, { markedUnread: true });
+                              }
                             }}
                             className="w-full px-3 py-2 rounded-xl text-xs font-medium text-left flex items-center gap-2.5 text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
                           >

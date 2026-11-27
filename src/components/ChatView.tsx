@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DocumentData, QueryDocumentSnapshot } from 'firebase/firestore';
 import {
   Archive,
@@ -6,7 +6,9 @@ import {
   BellOff,
   Check,
   CheckCheck,
+  ChevronDown,
   ChevronUp,
+  Clock,
   Copy,
   CornerUpLeft,
   CornerUpRight,
@@ -16,6 +18,7 @@ import {
   FileDown,
   FileText,
   Flag,
+  GripVertical,
   Hash,
   Image as ImageIcon,
   Lock,
@@ -39,6 +42,7 @@ import {
 } from 'lucide-react';
 import { Avatar } from './Avatar';
 import { ForwardModal } from './ForwardModal';
+import { RichMessageText } from './RichMessageText';
 import {
   MAX_ATTACHMENT_BYTES,
   approveJoinRequest,
@@ -146,7 +150,10 @@ function buildMessageSnippet(msg: ChatMessage): string {
   return 'Message';
 }
 
+const MAX_STAGED_ATTACHMENTS = 5;
+
 interface StagedAttachment {
+  id: string;
   file: File;
   isImage: boolean;
   viewOnce: boolean;
@@ -206,7 +213,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const [draft, setDraft] = useState('');
   const [replyingTo, setReplyingTo] = useState<ReplyMeta | null>(null);
-  const [stagedAttachment, setStagedAttachment] = useState<StagedAttachment | null>(null);
+  const [stagedAttachments, setStagedAttachments] = useState<StagedAttachment[]>([]);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
@@ -243,19 +250,44 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [rawTypingUsers, setRawTypingUsers] = useState<TypingParticipant[]>([]);
   const [typingClockMs, setTypingClockMs] = useState(() => Date.now());
 
+  // Drag-and-drop file/photo options & message drag/swipe states
+  const [fileDragActive, setFileDragActive] = useState(false);
+  const [fileDropHoverZone, setFileDropHoverZone] = useState<'photo' | 'view_once' | 'file' | null>(null);
+  const [draggingMessage, setDraggingMessage] = useState<ChatMessage | null>(null);
+  const [msgDropHoverZone, setMsgDropHoverZone] = useState<'reply' | 'copy' | 'forward' | 'delete' | null>(null);
+  const [swipeState, setSwipeState] = useState<{ messageId: string; offsetX: number } | null>(null);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const messagesContentRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const headerMenuRef = useRef<HTMLDivElement | null>(null);
   const recentSendTimesRef = useRef<number[]>([]);
   const isAtBottomRef = useRef(true);
-  const hasScrolledInitialRef = useRef(false);
+  const needsInitialBottomScrollRef = useRef(true);
+  const oldestPagedDocRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
   const photoUrlsRef = useRef<Record<string, string>>({});
   const lastTypingSentRef = useRef<number>(0);
   const typingIdleTimerRef = useRef<number | null>(null);
   const isTypingSentRef = useRef<boolean>(false);
   const currentUserRef = useRef<Profile>(currentUser);
+  const touchSwipeRef = useRef<{
+    messageId: string;
+    startX: number;
+    startY: number;
+    locked: 'x' | 'y' | null;
+  } | null>(null);
+  const lastMarkedIncomingIdRef = useRef<string | null>(null);
+
+  const stagedAttachmentsRef = useRef<StagedAttachment[]>([]);
+
+  useEffect(() => {
+    stagedAttachmentsRef.current = stagedAttachments;
+  }, [stagedAttachments]);
+
+  const swipeOffsetRef = useRef<{ messageId: string; offsetX: number } | null>(null);
 
   useEffect(() => {
     photoUrlsRef.current = photoUrls;
@@ -265,19 +297,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
     currentUserRef.current = currentUser;
   }, [currentUser]);
 
-  const scrollToBottom = useCallback(() => {
+  const scrollToBottom = useCallback((smooth = false) => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    if (smooth && typeof el.scrollTo === 'function') {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    } else {
+      el.scrollTop = el.scrollHeight;
+    }
+    isAtBottomRef.current = true;
+    setShowScrollToBottom(false);
   }, []);
 
   useEffect(() => {
     return () => {
-      if (stagedAttachment?.previewUrl) {
-        URL.revokeObjectURL(stagedAttachment.previewUrl);
-      }
+      stagedAttachmentsRef.current.forEach((item) => {
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      });
     };
-  }, [stagedAttachment]);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -288,8 +326,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
   // Load member list, chat metadata, messages, typing, reactions, and read receipts
   useEffect(() => {
     let cancelled = false;
-    hasScrolledInitialRef.current = false;
+    needsInitialBottomScrollRef.current = true;
     isAtBottomRef.current = true;
+    oldestPagedDocRef.current = null;
+    setShowScrollToBottom(false);
 
     setLiveMessages([]);
     setOlderMessages([]);
@@ -303,6 +343,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setReactions([]);
     setReadReceipts([]);
     setReplyingTo(null);
+    setStagedAttachments((prev) => {
+      prev.forEach((item) => {
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      });
+      return [];
+    });
     setActionMessage(null);
     setShowMoreEmojis(false);
     setHeaderMenuOpen(false);
@@ -331,22 +377,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
         if (!cancelled) setChatMeta(null);
       });
 
+    lastMarkedIncomingIdRef.current = null;
     const unsubscribe = subscribeToLatestMessages(chat.id, (latest, oldestSnap, moreAvailable) => {
       if (cancelled) return;
       setLiveMessages(latest);
       setOldestLiveDoc(oldestSnap);
-      setHasMore((prevMore) => (oldestPagedDoc ? prevMore : moreAvailable));
+      setHasMore((prevMore) => (oldestPagedDocRef.current ? prevMore : moreAvailable));
       setLoadingInitial(false);
 
       if (!document.hidden && latest.length > 0) {
-        onChatViewed?.(chat.id);
-      }
-
-      if (!hasScrolledInitialRef.current || isAtBottomRef.current) {
-        hasScrolledInitialRef.current = true;
-        requestAnimationFrame(() => {
-          scrollToBottom();
-        });
+        const latestIncoming = [...latest]
+          .reverse()
+          .find((m) => m.senderId !== currentUser.id);
+        if (latestIncoming && lastMarkedIncomingIdRef.current !== latestIncoming.id) {
+          lastMarkedIncomingIdRef.current = latestIncoming.id;
+          onChatViewed?.(chat.id);
+        }
       }
     });
 
@@ -383,7 +429,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       }
       setRawTypingUsers([]);
     };
-  }, [chat.id, chat.type, currentUser.id, scrollToBottom, onChatViewed]);
+  }, [chat.id, chat.type, currentUser.id, onChatViewed]);
 
   // Live join requests subscription for private group admins
   useEffect(() => {
@@ -518,17 +564,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
     return map;
   }, [reactions, currentUser.id, blockedUserIds]);
 
-  // Latest read timestamp by any member other than currentUser
-  const maxPeerReadMs = useMemo(() => {
-    let maxMs = 0;
+  // Latest delivered and read timestamps by any member other than currentUser
+  const { maxPeerDeliveredMs, maxPeerReadMs } = useMemo(() => {
+    let deliveredMs = 0;
+    let readMs = 0;
     for (const receipt of readReceipts) {
       if (receipt.userId === currentUser.id) continue;
-      const ms = new Date(receipt.lastReadAt).getTime();
-      if (!Number.isNaN(ms) && ms > maxMs) {
-        maxMs = ms;
+      if (receipt.lastDeliveredAt) {
+        const dMs = new Date(receipt.lastDeliveredAt).getTime();
+        if (!Number.isNaN(dMs) && dMs > deliveredMs) {
+          deliveredMs = dMs;
+        }
+      }
+      if (receipt.lastReadAt) {
+        const rMs = new Date(receipt.lastReadAt).getTime();
+        if (!Number.isNaN(rMs) && rMs > readMs) {
+          readMs = rMs;
+        }
       }
     }
-    return maxMs;
+    return {
+      maxPeerDeliveredMs: Math.max(deliveredMs, readMs),
+      maxPeerReadMs: readMs,
+    };
   }, [readReceipts, currentUser.id]);
 
   // Auto-load standard photos & check view-once status for visible messages
@@ -580,8 +638,77 @@ export const ChatView: React.FC<ChatViewProps> = ({
     };
   }, [visibleMessages, chat.id, currentUser.id, photoUrls, photoLoading, photoErrors, viewedOnceMap]);
 
+  // Ensure chat opens directly at the latest messages (bottom) before browser paint
+  useLayoutEffect(() => {
+    if (loadingInitial) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    if (needsInitialBottomScrollRef.current) {
+      el.scrollTop = el.scrollHeight;
+      isAtBottomRef.current = true;
+      setShowScrollToBottom(false);
+      if (displayedMessages.length > 0) {
+        needsInitialBottomScrollRef.current = false;
+      }
+      return;
+    }
+
+    if (isAtBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+      setShowScrollToBottom(false);
+    }
+  }, [chat.id, loadingInitial, displayedMessages.length]);
+
+  // Keep pinned to bottom when async photos/attachments finish rendering
+  useEffect(() => {
+    const contentEl = messagesContentRef.current;
+    const scrollEl = scrollContainerRef.current;
+    if (!contentEl || !scrollEl || typeof ResizeObserver === 'undefined') return;
+
+    const observer = new ResizeObserver(() => {
+      if (needsInitialBottomScrollRef.current || isAtBottomRef.current) {
+        scrollEl.scrollTop = scrollEl.scrollHeight;
+        setShowScrollToBottom(false);
+      }
+    });
+    observer.observe(contentEl);
+    return () => observer.disconnect();
+  }, [chat.id, loadingInitial, displayedMessages.length]);
+
+  // Prevent browser tab navigation on accidental drops anywhere and reset stuck drag states
+  useEffect(() => {
+    const preventWindowFileDrop = (e: DragEvent) => {
+      const types = Array.from(e.dataTransfer?.types ?? []);
+      if (types.includes('Files')) {
+        e.preventDefault();
+      }
+    };
+    const clearDragStates = () => {
+      setFileDragActive(false);
+      setFileDropHoverZone(null);
+      setDraggingMessage(null);
+      setMsgDropHoverZone(null);
+    };
+    const onKeyEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        clearDragStates();
+      }
+    };
+    window.addEventListener('dragover', preventWindowFileDrop);
+    window.addEventListener('drop', preventWindowFileDrop);
+    window.addEventListener('dragend', clearDragStates);
+    window.addEventListener('keydown', onKeyEsc);
+    return () => {
+      window.removeEventListener('dragover', preventWindowFileDrop);
+      window.removeEventListener('drop', preventWindowFileDrop);
+      window.removeEventListener('dragend', clearDragStates);
+      window.removeEventListener('keydown', onKeyEsc);
+    };
+  }, []);
+
   const handleLoadOlder = useCallback(async () => {
-    const cursor = oldestPagedDoc ?? oldestLiveDoc;
+    const cursor = oldestPagedDocRef.current ?? oldestLiveDoc;
     if (loadingOlder || !hasMore || !cursor) return;
 
     const el = scrollContainerRef.current;
@@ -595,6 +722,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         const nextOlder = page.messages.filter((m) => !seen.has(m.id));
         return [...nextOlder, ...prev];
       });
+      oldestPagedDocRef.current = page.oldestDoc;
       setOldestPagedDoc(page.oldestDoc);
       setHasMore(page.hasMore);
 
@@ -609,13 +737,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
     } finally {
       setLoadingOlder(false);
     }
-  }, [chat.id, hasMore, loadingOlder, oldestLiveDoc, oldestPagedDoc]);
+  }, [chat.id, hasMore, loadingOlder, oldestLiveDoc]);
 
   const handleScroll = () => {
     const el = scrollContainerRef.current;
-    if (!el) return;
-    isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
-    if (el.scrollTop < 72 && hasMore && !loadingOlder && !loadingInitial) {
+    if (!el || loadingInitial || needsInitialBottomScrollRef.current) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distanceFromBottom < 64;
+    isAtBottomRef.current = atBottom;
+    setShowScrollToBottom(!atBottom && displayedMessages.length > 0);
+    if (el.scrollTop < 72 && hasMore && !loadingOlder) {
       void handleLoadOlder();
     }
   };
@@ -641,39 +772,180 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const isPrivateGroup =
     chat.type === 'group' && (chatMeta?.visibility ?? chat.visibility) === 'private';
 
-  const handlePickFile = (e: React.ChangeEvent<HTMLInputElement>, asPhoto: boolean) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
+  const stageSelectedFiles = useCallback(
+    (incoming: FileList | File[], mode: 'auto' | 'photo' | 'view_once' | 'file') => {
+      setSendError(null);
+      if (currentUser.banned || isDmBlocked) {
+        setSendError('Attachments cannot be added in this conversation right now.');
+        return;
+      }
 
-    setSendError(null);
-    if (file.size <= 0) {
-      setSendError('Selected file is empty.');
-      return;
-    }
-    if (file.size > MAX_ATTACHMENT_BYTES) {
-      setSendError('Attachments cannot exceed 5 MB.');
-      return;
-    }
+      const files = Array.from(incoming);
+      if (files.length === 0) return;
 
-    const isImage = asPhoto || file.type.startsWith('image/');
-    if (asPhoto && !file.type.startsWith('image/')) {
-      setSendError('Please select a valid image file (PNG, JPG, WebP, GIF).');
-      return;
-    }
+      const availableSlots = MAX_STAGED_ATTACHMENTS - stagedAttachmentsRef.current.length;
+      if (availableSlots <= 0) {
+        setSendError(`You can stage up to ${MAX_STAGED_ATTACHMENTS} attachments at once.`);
+        return;
+      }
 
-    const previewUrl = isImage ? URL.createObjectURL(file) : null;
-    setStagedAttachment({
-      file,
-      isImage,
-      viewOnce: false,
-      previewUrl,
+      const nextItems: StagedAttachment[] = [];
+      let skippedEmpty = 0;
+      let skippedTooLarge = 0;
+      let fellBackToFile = false;
+      const overflowCount = Math.max(0, files.length - availableSlots);
+
+      for (const file of files.slice(0, availableSlots)) {
+        if (file.size <= 0) {
+          skippedEmpty += 1;
+          continue;
+        }
+        if (file.size > MAX_ATTACHMENT_BYTES) {
+          skippedTooLarge += 1;
+          continue;
+        }
+
+        const fileIsImg = file.type.startsWith('image/');
+        if ((mode === 'photo' || mode === 'view_once') && !fileIsImg) {
+          fellBackToFile = true;
+        }
+
+        const isImage = mode === 'file' ? false : fileIsImg;
+        const viewOnce = mode === 'view_once' && isImage;
+        const previewUrl = isImage ? URL.createObjectURL(file) : null;
+        nextItems.push({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          file,
+          isImage,
+          viewOnce,
+          previewUrl,
+        });
+      }
+
+      if (nextItems.length > 0) {
+        setStagedAttachments((prev) => [...prev, ...nextItems]);
+        requestAnimationFrame(() => composerInputRef.current?.focus());
+      }
+
+      if (skippedTooLarge > 0 && skippedEmpty > 0) {
+        setSendError('Some files were skipped (empty or over 5 MB limit).');
+      } else if (skippedTooLarge > 0) {
+        setSendError(
+          skippedTooLarge === 1
+            ? 'Attachment skipped: exceeds 5 MB limit.'
+            : `${skippedTooLarge} attachments skipped: each file must be 5 MB or less.`,
+        );
+      } else if (skippedEmpty > 0) {
+        setSendError('Empty files cannot be attached.');
+      } else if (overflowCount > 0) {
+        onToast(`Added ${nextItems.length} files (max ${MAX_STAGED_ATTACHMENTS} queued at once).`);
+      } else if (fellBackToFile && nextItems.length > 0) {
+        onToast('Non-image files were attached as regular files.');
+      }
+    },
+    [currentUser.banned, isDmBlocked, onToast],
+  );
+
+  const removeStagedAttachment = useCallback((id: string) => {
+    setStagedAttachments((prev) => {
+      const target = prev.find((item) => item.id === id);
+      if (target?.previewUrl) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
+      return prev.filter((item) => item.id !== id);
     });
+  }, []);
+
+  const clearAllStagedAttachments = useCallback(() => {
+    setStagedAttachments((prev) => {
+      prev.forEach((item) => {
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      });
+      return [];
+    });
+  }, []);
+
+  const handlePickFile = (e: React.ChangeEvent<HTMLInputElement>, asPhoto: boolean) => {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = '';
+    if (files.length === 0) return;
+    stageSelectedFiles(files, asPhoto ? 'photo' : 'file');
+  };
+
+  const handleComposerPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = e.clipboardData?.files;
+    if (files && files.length > 0) {
+      const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'));
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        stageSelectedFiles(imageFiles, 'photo');
+      }
+    }
+  };
+
+  const isExternalFileDrag = (e: React.DragEvent): boolean => {
+    const types = Array.from(e.dataTransfer?.types ?? []);
+    return types.includes('Files') && !types.includes('application/x-buddychat-msg');
+  };
+
+  const isInternalMessageDrag = (e: React.DragEvent): boolean => {
+    const types = Array.from(e.dataTransfer?.types ?? []);
+    return types.includes('application/x-buddychat-msg');
+  };
+
+  const resolveDraggedMessage = (e: React.DragEvent): ChatMessage | null => {
+    if (draggingMessage) return draggingMessage;
+    const msgId = e.dataTransfer?.getData('application/x-buddychat-msg');
+    if (!msgId) return null;
+    return visibleMessages.find((m) => m.id === msgId) ?? null;
+  };
+
+  const handleChatDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!isExternalFileDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setFileDragActive(true);
+  };
+
+  const handleChatDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!isExternalFileDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!fileDragActive) {
+      setFileDragActive(true);
+    }
+  };
+
+  const handleChatDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!isExternalFileDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const related = e.relatedTarget as Node | null;
+    if (!related || !e.currentTarget.contains(related)) {
+      setFileDragActive(false);
+      setFileDropHoverZone(null);
+    }
+  };
+
+  const handleChatDrop = (
+    e: React.DragEvent<HTMLDivElement>,
+    mode: 'auto' | 'photo' | 'view_once' | 'file' = 'auto',
+  ) => {
+    if (!isExternalFileDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setFileDragActive(false);
+    setFileDropHoverZone(null);
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      stageSelectedFiles(files, mode);
+    }
   };
 
   const handleSend = async () => {
     const trimmed = draft.trim();
-    if ((!trimmed && !stagedAttachment) || sending) return;
+    if ((!trimmed && stagedAttachments.length === 0) || sending) return;
 
     if (currentUser.banned) {
       setSendError('Your account is restricted from sending messages.');
@@ -690,10 +962,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
       return;
     }
 
+    const neededSends = Math.max(1, stagedAttachments.length);
     const now = Date.now();
     recentSendTimesRef.current = recentSendTimesRef.current.filter((t) => now - t < 10_000);
-    if (recentSendTimesRef.current.length >= 5) {
-      setSendError('Slow down: max 5 messages per 10 seconds.');
+    if (recentSendTimesRef.current.length + neededSends > 5) {
+      const remaining = Math.max(0, 5 - recentSendTimesRef.current.length);
+      setSendError(
+        stagedAttachments.length > 1
+          ? `Rate limit: max 5 messages per 10 seconds (${remaining} slots available right now).`
+          : 'Slow down: max 5 messages per 10 seconds.',
+      );
       return;
     }
 
@@ -701,40 +979,59 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setSending(true);
     setSendError(null);
     const outgoingText = trimmed;
-    const outgoingAttachment = stagedAttachment;
+    const outgoingAttachments = [...stagedAttachments];
     const outgoingReply = replyingTo;
     setDraft('');
-    setStagedAttachment(null);
+    setStagedAttachments([]);
     setReplyingTo(null);
 
-    const attachmentKind: AttachmentKind | undefined = outgoingAttachment
-      ? outgoingAttachment.isImage
-        ? outgoingAttachment.viewOnce
-          ? 'view_once_photo'
-          : 'photo'
-        : 'file'
-      : undefined;
-
+    let sentCount = 0;
     try {
-      await sendMessage(
-        chat.id,
-        currentUser,
-        outgoingText,
-        outgoingAttachment && attachmentKind
-          ? { file: outgoingAttachment.file, kind: attachmentKind }
-          : undefined,
-        dmPartner?.id ?? null,
-        outgoingReply ? { replyTo: outgoingReply } : undefined,
-      );
-      recentSendTimesRef.current.push(Date.now());
+      if (outgoingAttachments.length === 0) {
+        await sendMessage(
+          chat.id,
+          currentUser,
+          outgoingText,
+          undefined,
+          dmPartner?.id ?? null,
+          outgoingReply ? { replyTo: outgoingReply } : undefined,
+        );
+        recentSendTimesRef.current.push(Date.now());
+      } else {
+        for (let i = 0; i < outgoingAttachments.length; i++) {
+          const item = outgoingAttachments[i];
+          const attachmentKind: AttachmentKind = item.isImage
+            ? item.viewOnce
+              ? 'view_once_photo'
+              : 'photo'
+            : 'file';
+
+          await sendMessage(
+            chat.id,
+            currentUser,
+            i === 0 ? outgoingText : '',
+            { file: item.file, kind: attachmentKind },
+            dmPartner?.id ?? null,
+            i === 0 && outgoingReply ? { replyTo: outgoingReply } : undefined,
+          );
+          sentCount += 1;
+          recentSendTimesRef.current.push(Date.now());
+          if (item.previewUrl) {
+            URL.revokeObjectURL(item.previewUrl);
+          }
+        }
+      }
       requestAnimationFrame(() => scrollToBottom());
     } catch (err) {
-      setDraft(outgoingText);
-      if (outgoingAttachment) {
-        setStagedAttachment(outgoingAttachment);
+      const unsent = outgoingAttachments.slice(sentCount);
+      if (sentCount === 0) {
+        setDraft(outgoingText);
+        if (outgoingReply) {
+          setReplyingTo(outgoingReply);
+        }
       }
-      if (outgoingReply) {
-        setReplyingTo(outgoingReply);
+      if (unsent.length > 0) {
+        setStagedAttachments((prev) => [...unsent, ...prev]);
       }
       const msg = err instanceof Error ? err.message : 'Failed to send message.';
       if (msg.toLowerCase().includes('rate limit') || msg.toLowerCase().includes('permission')) {
@@ -1027,9 +1324,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
             isPrivateGroup ? 'Private' : 'Public'
           } · 24h`;
 
+  const lastOwnMessageId = useMemo(() => {
+    for (let i = displayedMessages.length - 1; i >= 0; i--) {
+      if (displayedMessages[i].senderId === currentUser.id) {
+        return displayedMessages[i].id;
+      }
+    }
+    return null;
+  }, [displayedMessages, currentUser.id]);
+
   return (
     <div className="h-full flex bg-white dark:bg-black relative overflow-hidden">
-      <div className="flex-1 flex flex-col min-w-0 h-full">
+      <div
+        className="flex-1 flex flex-col min-w-0 h-full relative"
+        onDragEnter={handleChatDragEnter}
+        onDragOver={handleChatDragOver}
+        onDragLeave={handleChatDragLeave}
+        onDrop={(e) => handleChatDrop(e, 'auto')}
+      >
         {/* Clean Modern Top Header */}
         <header className="h-15 px-3 sm:px-5 border-b border-slate-200/80 dark:border-white/[0.08] bg-white/90 dark:bg-[#121212]/90 backdrop-blur-md flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
@@ -1421,53 +1733,56 @@ export const ChatView: React.FC<ChatViewProps> = ({
         )}
 
         {/* Scrollable Message Thread */}
-        <div
-          ref={scrollContainerRef}
-          onScroll={handleScroll}
-          className="flex-1 overflow-y-auto chat-scroll px-3 sm:px-6 py-4 space-y-3"
-        >
-          {hasMore && (
-            <div className="flex justify-center pb-2">
-              <button
-                type="button"
-                onClick={handleLoadOlder}
-                disabled={loadingOlder}
-                className="min-h-[36px] px-3.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#121212] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-medium text-slate-600 dark:text-neutral-300 inline-flex items-center gap-1.5 transition-colors"
-              >
-                <ChevronUp className="w-3.5 h-3.5" />
-                <span>{loadingOlder ? 'Loading older...' : 'Load older messages'}</span>
-              </button>
-            </div>
-          )}
-
-          {loadingInitial ? (
-            <div className="space-y-4 py-4">
-              {[0, 1, 2, 3].map((i) => (
-                <div
-                  key={i}
-                  className={`flex ${i % 2 === 1 ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div className="h-14 w-64 rounded-2xl bg-slate-100 dark:bg-white/[0.06] animate-pulse" />
+        <div className="flex-1 min-h-0 relative flex flex-col">
+          <div
+            ref={scrollContainerRef}
+            onScroll={handleScroll}
+            className="flex-1 overflow-y-auto overflow-x-hidden chat-scroll px-3 sm:px-6 py-4"
+          >
+            <div ref={messagesContentRef} className="space-y-3 min-h-full flex flex-col">
+              {hasMore && (
+                <div className="flex justify-center pb-2">
+                  <button
+                    type="button"
+                    onClick={handleLoadOlder}
+                    disabled={loadingOlder}
+                    className="min-h-[36px] px-3.5 py-1.5 rounded-full border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#121212] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-xs font-medium text-slate-600 dark:text-neutral-300 inline-flex items-center gap-1.5 transition-colors"
+                  >
+                    <ChevronUp className="w-3.5 h-3.5" />
+                    <span>{loadingOlder ? 'Loading older...' : 'Load older messages'}</span>
+                  </button>
                 </div>
-              ))}
-            </div>
-          ) : loadError ? (
-            <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-300">
-              {loadError}
-            </div>
-          ) : displayedMessages.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-center py-12 space-y-2">
-              <p className="text-sm font-semibold text-slate-700 dark:text-neutral-200">
-                {searchOpen && searchQuery.trim() ? 'No matching messages' : 'No active messages'}
-              </p>
-              <p className="text-xs text-slate-500 dark:text-neutral-400 max-w-xs leading-relaxed">
-                {searchOpen && searchQuery.trim()
-                  ? `Nothing matched "${searchQuery.trim()}" in the last 24 hours.`
-                  : `Say hello as ${currentUser.username}. Messages auto-delete after 24 hours.`}
-              </p>
-            </div>
-          ) : (
-            displayedMessages.map((msg, idx) => {
+              )}
+
+              {loadingInitial ? (
+                <div className="space-y-4 py-4">
+                  {[0, 1, 2, 3].map((i) => (
+                    <div
+                      key={i}
+                      className={`flex ${i % 2 === 1 ? 'justify-end' : 'justify-start'}`}
+                    >
+                      <div className="h-14 w-64 rounded-2xl bg-slate-100 dark:bg-white/[0.06] animate-pulse" />
+                    </div>
+                  ))}
+                </div>
+              ) : loadError ? (
+                <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-300">
+                  {loadError}
+                </div>
+              ) : displayedMessages.length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-center py-12 space-y-2">
+                  <p className="text-sm font-semibold text-slate-700 dark:text-neutral-200">
+                    {searchOpen && searchQuery.trim() ? 'No matching messages' : 'No active messages'}
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-neutral-400 max-w-xs leading-relaxed">
+                    {searchOpen && searchQuery.trim()
+                      ? `Nothing matched "${searchQuery.trim()}" in the last 24 hours.`
+                      : `Say hello as ${currentUser.username}, or drag & drop photos/files here. Messages auto-delete after 24 hours.`}
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-auto space-y-3">
+                  {displayedMessages.map((msg, idx) => {
               const isOwn = msg.senderId === currentUser.id;
               const senderProfile = memberById.get(msg.senderId);
               const senderDisplayName = getDisplayName(
@@ -1482,6 +1797,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
               const msgReactions = reactionsByMessage.get(msg.id);
               const msgCreatedMs = new Date(msg.createdAt).getTime();
               const isReadByPeer = isOwn && !msg.pending && maxPeerReadMs >= msgCreatedMs;
+              const isDeliveredToPeer =
+                isOwn && !msg.pending && !isReadByPeer && maxPeerDeliveredMs >= msgCreatedMs;
+              const isLastOwnMsg = isOwn && msg.id === lastOwnMessageId;
               const showGroupSenderName = !isOwn && chat.type === 'group';
               const repliedSource = msg.replyTo
                 ? visibleMessages.find((m) => m.id === msg.replyTo!.messageId)
@@ -1495,6 +1813,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     )
                   : msg.replyTo.senderUsername
                 : '';
+              const swipeOffset = swipeState?.messageId === msg.id ? swipeState.offsetX : 0;
 
               return (
                 <React.Fragment key={msg.id}>
@@ -1508,7 +1827,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
                   <div
                     id={`msg-${msg.id}`}
-                    className={`group message-enter flex items-end gap-2 ${
+                    className={`group message-enter flex items-end gap-2 min-w-0 ${
                       isOwn ? 'justify-end' : 'justify-start'
                     }`}
                   >
@@ -1529,7 +1848,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     )}
 
                     <div
-                      className={`max-w-[82%] sm:max-w-[70%] flex flex-col ${
+                      className={`min-w-0 max-w-[84%] sm:max-w-[70%] flex flex-col ${
                         isOwn ? 'items-end' : 'items-start'
                       }`}
                     >
@@ -1537,33 +1856,113 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <button
                           type="button"
                           onClick={() => onOpenProfile(msg.senderId)}
-                          className="text-xs font-semibold text-slate-600 dark:text-neutral-400 hover:underline px-1 mb-1"
+                          className="text-xs font-semibold text-slate-600 dark:text-neutral-400 hover:underline px-1 mb-1 max-w-full truncate"
                         >
                           {senderDisplayName}
                         </button>
                       )}
 
-                      <div
-                        className={`flex items-center gap-1.5 ${
-                          isOwn ? 'flex-row-reverse' : 'flex-row'
-                        }`}
-                      >
+                        {swipeOffset !== 0 && (
+                          <div
+                            aria-hidden="true"
+                            className={`pointer-events-none absolute top-1/2 -translate-y-1/2 flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-semibold transition-colors ${
+                              isOwn ? '-right-14' : '-left-14'
+                            } ${
+                              Math.abs(swipeOffset) >= 42
+                                ? 'bg-[#2B84F6] text-white shadow-sm'
+                                : 'bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-neutral-300'
+                            }`}
+                          >
+                            <CornerUpLeft className="w-3.5 h-3.5" />
+                            <span>Reply</span>
+                          </div>
+                        )}
+
                         <div
-                          onClick={() => {
+                          className={`min-w-0 max-w-full flex items-center gap-1.5 relative ${
+                            isOwn ? 'flex-row-reverse' : 'flex-row'
+                          } ${draggingMessage?.id === msg.id ? 'opacity-55 scale-[0.98] transition-transform' : ''}`}
+                          style={
+                            swipeOffset !== 0
+                              ? { transform: `translateX(${swipeOffset}px)`, transition: 'none' }
+                              : undefined
+                          }
+                          onTouchStart={(e) => {
+                            const touch = e.touches[0];
+                            if (!touch) return;
+                            touchSwipeRef.current = {
+                              messageId: msg.id,
+                              startX: touch.clientX,
+                              startY: touch.clientY,
+                              locked: null,
+                            };
+                            swipeOffsetRef.current = null;
+                          }}
+                          onTouchMove={(e) => {
+                            const state = touchSwipeRef.current;
+                            const touch = e.touches[0];
+                            if (!state || state.messageId !== msg.id || !touch) return;
+                            const dx = touch.clientX - state.startX;
+                            const dy = touch.clientY - state.startY;
+                            if (!state.locked) {
+                              if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
+                                state.locked = 'x';
+                              } else if (Math.abs(dy) > 10) {
+                                state.locked = 'y';
+                                return;
+                              } else {
+                                return;
+                              }
+                            }
+                            if (state.locked === 'x') {
+                              const clamped = isOwn
+                                ? Math.max(-64, Math.min(0, dx))
+                                : Math.min(64, Math.max(0, dx));
+                              const nextSwipe = { messageId: msg.id, offsetX: clamped };
+                              swipeOffsetRef.current = nextSwipe;
+                              setSwipeState(nextSwipe);
+                            }
+                          }}
+                          onTouchEnd={() => {
+                            const currentOffset =
+                              swipeOffsetRef.current?.messageId === msg.id
+                                ? Math.abs(swipeOffsetRef.current.offsetX)
+                                : swipeState?.messageId === msg.id
+                                  ? Math.abs(swipeState.offsetX)
+                                  : 0;
+                            touchSwipeRef.current = null;
+                            swipeOffsetRef.current = null;
+                            setSwipeState(null);
+                            if (currentOffset >= 42) {
+                              handleReplyMessage(msg);
+                            }
+                          }}
+                          onTouchCancel={() => {
+                            touchSwipeRef.current = null;
+                            swipeOffsetRef.current = null;
+                            setSwipeState(null);
+                          }}
+                        >
+                        <div
+                          onClick={(e) => {
+                            if ((e.target as HTMLElement).closest('a, button')) return;
+                            const selection = window.getSelection()?.toString().trim();
+                            if (selection) return;
                             setActionMessage(msg);
                             setShowMoreEmojis(false);
                           }}
                           role="button"
                           tabIndex={0}
                           onKeyDown={(e) => {
+                            if ((e.target as HTMLElement).closest('a, button')) return;
                             if (e.key === 'Enter' || e.key === ' ') {
                               e.preventDefault();
                               setActionMessage(msg);
                               setShowMoreEmojis(false);
                             }
                           }}
-                          title="Tap for reactions, reply, copy, forward, or delete"
-                          className={`cursor-pointer select-text px-4 py-2.5 transition-opacity ${
+                          title="Click for reactions, reply, copy, forward, or delete"
+                          className={`min-w-0 max-w-full overflow-hidden cursor-pointer select-text px-4 py-2.5 transition-opacity ${
                             isOwn
                               ? 'bg-[#2B84F6] text-white rounded-2xl rounded-tr-sm'
                               : 'bg-[#F3F4F6] dark:bg-[#242426] text-slate-900 dark:text-neutral-100 rounded-2xl rounded-tl-sm'
@@ -1575,7 +1974,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                 isOwn ? 'text-white/80' : 'text-slate-500 dark:text-neutral-400'
                               }`}
                             >
-                              <CornerUpRight className="w-3 h-3" />
+                              <CornerUpRight className="w-3 h-3 shrink-0" />
                               <span>Forwarded</span>
                             </p>
                           )}
@@ -1587,22 +1986,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                 e.stopPropagation();
                                 scrollToMessageById(msg.replyTo!.messageId);
                               }}
-                              className={`w-full text-left rounded-xl px-2.5 py-1.5 mb-2 text-xs transition-colors ${
+                              className={`w-full min-w-0 text-left rounded-xl px-2.5 py-1.5 mb-2 text-xs transition-colors ${
                                 isOwn
                                   ? 'bg-white/15 hover:bg-white/20 text-white'
                                   : 'bg-black/[0.05] dark:bg-white/[0.07] hover:bg-black/[0.08] text-slate-700 dark:text-neutral-200'
                               }`}
                             >
                               <p className="font-semibold truncate">{replyAuthorName}</p>
-                              <p className="opacity-85 line-clamp-1">{msg.replyTo.snippet}</p>
+                              <p className="opacity-85 line-clamp-1 break-words [overflow-wrap:anywhere]">
+                                {msg.replyTo.snippet}
+                              </p>
                             </button>
                           )}
 
-                          {msg.body && (
-                            <p className="text-sm sm:text-[15px] leading-relaxed whitespace-pre-wrap break-words">
-                              {msg.body}
-                            </p>
-                          )}
+                          {msg.body && <RichMessageText text={msg.body} isOwn={isOwn} />}
 
                           {att && att.kind === 'photo' && (
                             <div
@@ -1624,6 +2021,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                   <img
                                     src={photoUrls[att.id]}
                                     alt={att.fileName}
+                                    onLoad={() => {
+                                      if (isAtBottomRef.current) {
+                                        scrollToBottom();
+                                      }
+                                    }}
                                     className="max-h-72 w-auto object-cover"
                                   />
                                 </button>
@@ -1714,17 +2116,49 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           )}
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setActionMessage(msg);
-                            setShowMoreEmojis(false);
-                          }}
-                          aria-label="Message actions"
-                          className="opacity-0 group-hover:opacity-100 focus:opacity-100 min-h-[32px] min-w-[32px] rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-all shrink-0"
-                        >
-                          <MoreHorizontal className="w-4 h-4" />
-                        </button>
+                        <div className="opacity-65 sm:opacity-45 group-hover:opacity-100 focus-within:opacity-100 flex items-center gap-0.5 transition-opacity shrink-0">
+                          <div
+                            draggable
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData('application/x-buddychat-msg', msg.id);
+                              e.dataTransfer.setData('text/plain', buildMessageSnippet(msg));
+                              e.dataTransfer.effectAllowed = 'move';
+                              setDraggingMessage(msg);
+                            }}
+                            onDragEnd={() => {
+                              setDraggingMessage(null);
+                              setMsgDropHoverZone(null);
+                            }}
+                            title="Drag message to Reply, Copy, Forward, Delete, or Composer"
+                            aria-label="Drag message to options"
+                            className="flex min-h-[30px] min-w-[28px] rounded-full items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-grab active:cursor-grabbing"
+                          >
+                            <GripVertical className="w-3.5 h-3.5" />
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleReplyMessage(msg)}
+                            title="Reply"
+                            aria-label="Reply to message"
+                            className="hidden sm:flex min-h-[30px] min-w-[30px] rounded-full items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                          >
+                            <CornerUpLeft className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActionMessage(msg);
+                              setShowMoreEmojis(false);
+                            }}
+                            aria-label="Message actions"
+                            title="Message options"
+                            className="min-h-[30px] min-w-[30px] rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-neutral-200 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
+                          >
+                            <MoreHorizontal className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
 
                       {/* Reactions Row */}
@@ -1748,14 +2182,44 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         </div>
                       )}
 
-                      {/* Timestamp & Read Receipt */}
+                      {/* Timestamp & 3-State Delivery / Seen Indicator */}
                       <div className="flex items-center gap-1 mt-1 px-1 text-[11px] text-slate-400 dark:text-neutral-500 tabular-nums">
                         <span>{formatMessageTime(msg.createdAt)}</span>
                         {isOwn && (
-                          isReadByPeer ? (
-                            <CheckCheck className="w-3.5 h-3.5 text-[#2B84F6]" aria-label="Read" />
+                          msg.pending ? (
+                            <>
+                              <Clock
+                                className="w-3 h-3 text-slate-400 dark:text-neutral-500"
+                                aria-label="Sending"
+                              />
+                              {isLastOwnMsg && <span>Sending</span>}
+                            </>
+                          ) : isReadByPeer ? (
+                            <>
+                              <CheckCheck
+                                className="w-3.5 h-3.5 text-[#2B84F6]"
+                                aria-label="Seen"
+                              />
+                              {isLastOwnMsg && (
+                                <span className="text-[#2B84F6] font-medium">Seen</span>
+                              )}
+                            </>
+                          ) : isDeliveredToPeer ? (
+                            <>
+                              <CheckCheck
+                                className="w-3.5 h-3.5 text-slate-400 dark:text-neutral-500"
+                                aria-label="Delivered"
+                              />
+                              {isLastOwnMsg && <span>Delivered</span>}
+                            </>
                           ) : (
-                            <Check className="w-3.5 h-3.5 text-slate-400 dark:text-neutral-500" aria-label="Sent" />
+                            <>
+                              <Check
+                                className="w-3.5 h-3.5 text-slate-400 dark:text-neutral-500"
+                                aria-label="Sent"
+                              />
+                              {isLastOwnMsg && <span>Sent</span>}
+                            </>
                           )
                         )}
                       </div>
@@ -1763,12 +2227,74 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </div>
                 </React.Fragment>
               );
-            })
+            })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {showScrollToBottom && (
+            <button
+              type="button"
+              onClick={() => scrollToBottom(true)}
+              aria-label="Jump to latest messages"
+              title="Jump to latest"
+              className="absolute bottom-3 right-4 z-20 h-10 w-10 rounded-full bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/[0.12] shadow-lg text-slate-700 dark:text-neutral-200 hover:text-[#2B84F6] flex items-center justify-center transition-colors"
+            >
+              <ChevronDown className="w-5 h-5" />
+            </button>
           )}
         </div>
 
-        {/* Composer Dock */}
-        <div className="p-3 sm:p-4 border-t border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#121212] shrink-0 space-y-2.5">
+        {/* Composer Dock (also supports dropping a dragged message to reply) */}
+        <div
+          onDragEnter={(e) => {
+            if (isInternalMessageDrag(e) || draggingMessage) {
+              e.preventDefault();
+              e.stopPropagation();
+              setMsgDropHoverZone('reply');
+            }
+          }}
+          onDragOver={(e) => {
+            if (isInternalMessageDrag(e) || draggingMessage) {
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = 'move';
+              setMsgDropHoverZone('reply');
+            }
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+              setMsgDropHoverZone((z) => (z === 'reply' ? null : z));
+            }
+          }}
+          onDrop={(e) => {
+            if (isInternalMessageDrag(e) || draggingMessage) {
+              e.preventDefault();
+              e.stopPropagation();
+              const target = resolveDraggedMessage(e);
+              setDraggingMessage(null);
+              setMsgDropHoverZone(null);
+              if (target) {
+                handleReplyMessage(target);
+              }
+            }
+          }}
+          className={`p-3 sm:p-4 border-t border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#121212] shrink-0 space-y-2.5 transition-colors ${
+            draggingMessage
+              ? msgDropHoverZone === 'reply'
+                ? 'ring-2 ring-inset ring-[#2B84F6] bg-[#2B84F6]/[0.06]'
+                : 'ring-2 ring-inset ring-dashed ring-[#2B84F6]/45'
+              : ''
+          }`}
+        >
+          {draggingMessage && (
+            <div className="flex items-center justify-center gap-1.5 text-xs font-semibold text-[#2B84F6] py-0.5">
+              <CornerUpLeft className="w-3.5 h-3.5" />
+              <span>Drop message onto composer or dock below to act</span>
+            </div>
+          )}
+
           {activeTypists.length > 0 && (
             <div
               role="status"
@@ -1843,60 +2369,88 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </p>
           )}
 
-          {stagedAttachment && (
-            <div className="p-2.5 rounded-2xl border border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-black flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
-                {stagedAttachment.previewUrl ? (
-                  <img
-                    src={stagedAttachment.previewUrl}
-                    alt="Selected preview"
-                    className="h-12 w-12 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-white/[0.1]"
-                  />
-                ) : (
-                  <div className="h-12 w-12 rounded-xl bg-[#2B84F6]/10 text-[#2B84F6] flex items-center justify-center shrink-0">
-                    <FileText className="w-5 h-5" />
-                  </div>
-                )}
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold truncate">{stagedAttachment.file.name}</p>
-                  <p className="text-xs text-slate-500 dark:text-neutral-400 tabular-nums">
-                    {formatBytes(stagedAttachment.file.size)} · Max 5 MB
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1.5 shrink-0">
-                {stagedAttachment.isImage && (
+          {stagedAttachments.length > 0 && (
+            <div className="space-y-2">
+              {stagedAttachments.length > 1 && (
+                <div className="flex items-center justify-between px-1 text-xs text-slate-500 dark:text-neutral-400">
+                  <span className="font-medium tabular-nums">
+                    Queued attachments ({stagedAttachments.length}/{MAX_STAGED_ATTACHMENTS}) · Sends in sequence
+                  </span>
                   <button
                     type="button"
-                    onClick={() =>
-                      setStagedAttachment((prev) =>
-                        prev ? { ...prev, viewOnce: !prev.viewOnce } : prev,
-                      )
-                    }
-                    className={`min-h-[36px] px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
-                      stagedAttachment.viewOnce
-                        ? 'bg-[#2B84F6] text-white'
-                        : 'border border-slate-200 dark:border-white/[0.1] text-slate-700 dark:text-neutral-300 hover:bg-slate-200/70 dark:hover:bg-white/[0.06]'
-                    }`}
+                    onClick={clearAllStagedAttachments}
+                    className="font-semibold text-red-600 dark:text-red-400 hover:underline"
                   >
-                    {stagedAttachment.viewOnce ? (
-                      <EyeOff className="w-3.5 h-3.5" />
-                    ) : (
-                      <Eye className="w-3.5 h-3.5" />
-                    )}
-                    <span>{stagedAttachment.viewOnce ? 'View once' : 'Standard'}</span>
+                    Clear all
                   </button>
-                )}
+                </div>
+              )}
 
-                <button
-                  type="button"
-                  onClick={() => setStagedAttachment(null)}
-                  aria-label="Remove attachment"
-                  className="min-h-[36px] min-w-[36px] rounded-full flex items-center justify-center text-slate-500 hover:text-red-500 hover:bg-slate-200/70 dark:hover:bg-white/[0.06]"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+              <div className="max-h-44 overflow-y-auto chat-scroll space-y-1.5 pr-0.5">
+                {stagedAttachments.map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-2 rounded-2xl border border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-black flex items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      {item.previewUrl ? (
+                        <img
+                          src={item.previewUrl}
+                          alt={`Preview of ${item.file.name}`}
+                          className="h-11 w-11 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-white/[0.1]"
+                        />
+                      ) : (
+                        <div className="h-11 w-11 rounded-xl bg-[#2B84F6]/10 text-[#2B84F6] flex items-center justify-center shrink-0">
+                          <FileText className="w-5 h-5" />
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold truncate">{item.file.name}</p>
+                        <p className="text-xs text-slate-500 dark:text-neutral-400 tabular-nums">
+                          {formatBytes(item.file.size)} · Max 5 MB
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {item.isImage && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setStagedAttachments((prev) =>
+                              prev.map((entry) =>
+                                entry.id === item.id
+                                  ? { ...entry, viewOnce: !entry.viewOnce }
+                                  : entry,
+                              ),
+                            )
+                          }
+                          className={`min-h-[34px] px-2.5 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                            item.viewOnce
+                              ? 'bg-[#2B84F6] text-white'
+                              : 'border border-slate-200 dark:border-white/[0.1] text-slate-700 dark:text-neutral-300 hover:bg-slate-200/70 dark:hover:bg-white/[0.06]'
+                          }`}
+                        >
+                          {item.viewOnce ? (
+                            <EyeOff className="w-3.5 h-3.5" />
+                          ) : (
+                            <Eye className="w-3.5 h-3.5" />
+                          )}
+                          <span>{item.viewOnce ? 'View once' : 'Standard'}</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => removeStagedAttachment(item.id)}
+                        aria-label={`Remove ${item.file.name}`}
+                        className="min-h-[34px] min-w-[34px] rounded-full flex items-center justify-center text-slate-500 hover:text-red-500 hover:bg-slate-200/70 dark:hover:bg-white/[0.06]"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -1914,6 +2468,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <input
                 ref={photoInputRef}
                 type="file"
+                multiple
                 accept="image/jpeg,image/png,image/webp,image/gif"
                 onChange={(e) => handlePickFile(e, true)}
                 className="hidden"
@@ -1921,6 +2476,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <input
                 ref={fileInputRef}
                 type="file"
+                multiple
                 onChange={(e) => handlePickFile(e, false)}
                 className="hidden"
               />
@@ -1929,8 +2485,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 onClick={() => photoInputRef.current?.click()}
                 disabled={sending}
-                title="Share photo or view-once photo (max 5 MB)"
-                aria-label="Share photo"
+                title="Share photos or view-once photos (up to 5 files, max 5 MB each)"
+                aria-label="Share photos"
                 className="min-h-[44px] min-w-[44px] rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-600 dark:text-neutral-300 flex items-center justify-center transition-colors shrink-0"
               >
                 <ImageIcon className="w-4 h-4" />
@@ -1940,19 +2496,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={sending}
-                title="Attach file (max 5 MB)"
-                aria-label="Attach file"
+                title="Attach files (up to 5 files, max 5 MB each)"
+                aria-label="Attach files"
                 className="min-h-[44px] min-w-[44px] rounded-full border border-slate-200 dark:border-white/[0.08] hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-600 dark:text-neutral-300 flex items-center justify-center transition-colors shrink-0"
               >
                 <Paperclip className="w-4 h-4" />
               </button>
 
-              <div className="flex-1 relative">
+              <div className="flex-1 relative min-w-0">
                 <textarea
                   ref={composerInputRef}
                   value={draft}
                   onChange={(e) => handleDraftChange(e.target.value)}
                   onKeyDown={handleKeyDown}
+                  onPaste={handleComposerPaste}
                   maxLength={1000}
                   rows={1}
                   placeholder={`Message ${headerTitle}...`}
@@ -1968,7 +2525,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={sending || (draft.trim().length === 0 && !stagedAttachment)}
+                disabled={sending || (draft.trim().length === 0 && stagedAttachments.length === 0)}
                 aria-label="Send message"
                 className="min-h-[44px] min-w-[44px] rounded-full bg-[#2B84F6] hover:bg-[#1D74E8] disabled:opacity-40 disabled:cursor-not-allowed text-white flex items-center justify-center transition-colors shrink-0"
               >
@@ -1977,6 +2534,228 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </div>
           )}
         </div>
+
+        {/* Drag-and-Drop File & Photo Options Overlay */}
+        {fileDragActive && (
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = 'copy';
+            }}
+            onDrop={(e) => handleChatDrop(e, 'auto')}
+            className="absolute inset-0 z-40 bg-slate-900/55 dark:bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6"
+          >
+            <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-[#141414] border border-slate-200 dark:border-white/[0.12] shadow-2xl p-5 sm:p-6 space-y-4 relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setFileDragActive(false);
+                  setFileDropHoverZone(null);
+                }}
+                aria-label="Close drop overlay"
+                className="absolute right-3.5 top-3.5 min-h-[32px] min-w-[32px] rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+
+              <div className="text-center space-y-1">
+                <p className="text-base font-bold tracking-tight">Drop files or photos to attach</p>
+                <p className="text-xs text-slate-500 dark:text-neutral-400">
+                  Up to 5 files at once (max 5 MB each, auto-deletes after 24h). Drop anywhere or pick a mode:
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setFileDropHoverZone('photo');
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = 'copy';
+                    setFileDropHoverZone('photo');
+                  }}
+                  onDragLeave={(e) => {
+                    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                      setFileDropHoverZone((z) => (z === 'photo' ? null : z));
+                    }
+                  }}
+                  onDrop={(e) => handleChatDrop(e, 'photo')}
+                  className={`rounded-2xl border-2 border-dashed p-4 flex flex-col items-center justify-center text-center gap-2 transition-all ${
+                    fileDropHoverZone === 'photo'
+                      ? 'scale-[1.03] shadow-md border-[#2B84F6] bg-[#2B84F6]/12 text-[#2B84F6]'
+                      : 'border-slate-300 dark:border-white/[0.16] text-slate-700 dark:text-neutral-200'
+                  }`}
+                >
+                  <ImageIcon className="w-6 h-6 text-[#2B84F6]" />
+                  <span className="text-xs font-semibold">Photo</span>
+                  <span className="text-[11px] text-slate-500 dark:text-neutral-400">
+                    Visible in chat
+                  </span>
+                </div>
+
+                <div
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setFileDropHoverZone('view_once');
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = 'copy';
+                    setFileDropHoverZone('view_once');
+                  }}
+                  onDragLeave={(e) => {
+                    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                      setFileDropHoverZone((z) => (z === 'view_once' ? null : z));
+                    }
+                  }}
+                  onDrop={(e) => handleChatDrop(e, 'view_once')}
+                  className={`rounded-2xl border-2 border-dashed p-4 flex flex-col items-center justify-center text-center gap-2 transition-all ${
+                    fileDropHoverZone === 'view_once'
+                      ? 'scale-[1.03] shadow-md border-amber-500 bg-amber-500/12 text-amber-500'
+                      : 'border-slate-300 dark:border-white/[0.16] text-slate-700 dark:text-neutral-200'
+                  }`}
+                >
+                  <EyeOff className="w-6 h-6 text-amber-500" />
+                  <span className="text-xs font-semibold">View-once</span>
+                  <span className="text-[11px] text-slate-500 dark:text-neutral-400">
+                    Opens once only
+                  </span>
+                </div>
+
+                <div
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setFileDropHoverZone('file');
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = 'copy';
+                    setFileDropHoverZone('file');
+                  }}
+                  onDragLeave={(e) => {
+                    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                      setFileDropHoverZone((z) => (z === 'file' ? null : z));
+                    }
+                  }}
+                  onDrop={(e) => handleChatDrop(e, 'file')}
+                  className={`rounded-2xl border-2 border-dashed p-4 flex flex-col items-center justify-center text-center gap-2 transition-all ${
+                    fileDropHoverZone === 'file'
+                      ? 'scale-[1.03] shadow-md border-emerald-500 bg-emerald-500/12 text-emerald-500'
+                      : 'border-slate-300 dark:border-white/[0.16] text-slate-700 dark:text-neutral-200'
+                  }`}
+                >
+                  <Paperclip className="w-6 h-6 text-emerald-500" />
+                  <span className="text-xs font-semibold">File</span>
+                  <span className="text-[11px] text-slate-500 dark:text-neutral-400">
+                    Any file up to 5 MB
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Drag-and-Drop Message Options Dock */}
+        {draggingMessage && (
+          <div className="pointer-events-auto absolute bottom-24 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-md rounded-2xl bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border border-slate-200 dark:border-white/[0.12] shadow-2xl p-2 flex items-center gap-1.5 message-enter">
+            {(
+              [
+                {
+                  key: 'reply',
+                  label: 'Reply',
+                  icon: CornerUpLeft,
+                  danger: false,
+                  show: true,
+                },
+                {
+                  key: 'copy',
+                  label: 'Copy',
+                  icon: Copy,
+                  danger: false,
+                  show: true,
+                },
+                {
+                  key: 'forward',
+                  label: 'Forward',
+                  icon: CornerUpRight,
+                  danger: false,
+                  show: true,
+                },
+                {
+                  key: 'delete',
+                  label: 'Delete',
+                  icon: Trash2,
+                  danger: true,
+                  show: draggingMessage.senderId === currentUser.id,
+                },
+              ] as const
+            )
+              .filter((opt) => opt.show)
+              .map((opt) => {
+                const Icon = opt.icon;
+                const isHover = msgDropHoverZone === opt.key;
+                return (
+                  <div
+                    key={opt.key}
+                    onDragEnter={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setMsgDropHoverZone(opt.key);
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.dataTransfer.dropEffect = 'move';
+                      setMsgDropHoverZone(opt.key);
+                    }}
+                    onDragLeave={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                        setMsgDropHoverZone((z) => (z === opt.key ? null : z));
+                      }
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const target = resolveDraggedMessage(e);
+                      setDraggingMessage(null);
+                      setMsgDropHoverZone(null);
+                      if (!target) return;
+                      if (opt.key === 'reply') {
+                        handleReplyMessage(target);
+                      } else if (opt.key === 'copy') {
+                        void handleCopyMessage(target);
+                      } else if (opt.key === 'forward') {
+                        setForwardingMessage(target);
+                      } else if (opt.key === 'delete') {
+                        void handleDeleteMessage(target);
+                      }
+                    }}
+                    className={`flex-1 py-2.5 px-2 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1 text-xs font-semibold transition-all ${
+                      opt.danger
+                        ? isHover
+                          ? 'scale-[1.03] border-red-500 bg-red-500/15 text-red-600 dark:text-red-400'
+                          : 'border-red-500/30 text-red-600 dark:text-red-400'
+                        : isHover
+                          ? 'scale-[1.03] border-[#2B84F6] bg-[#2B84F6]/15 text-[#2B84F6]'
+                          : 'border-slate-300 dark:border-white/[0.15] text-slate-700 dark:text-neutral-200'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" />
+                    <span>{opt.label}</span>
+                  </div>
+                );
+              })}
+          </div>
+        )}
       </div>
 
       {/* Members & Requests Drawer */}
@@ -2232,17 +3011,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
           >
             {/* Message Preview Card */}
             <div className="p-4 pb-2">
-              <div className="p-3.5 rounded-2xl bg-slate-100/90 dark:bg-black text-sm text-slate-800 dark:text-neutral-200">
-                <p className="text-xs font-semibold text-slate-500 dark:text-neutral-400 mb-1">
+              <div className="p-3.5 rounded-2xl bg-slate-100/90 dark:bg-black text-sm text-slate-800 dark:text-neutral-200 min-w-0 overflow-hidden">
+                <p className="text-xs font-semibold text-slate-500 dark:text-neutral-400 mb-1 truncate">
                   {getDisplayName(
                     actionMessage.senderId,
                     actionMessage.senderUsername,
                     nicknames,
                   )}
                 </p>
-                <p className="line-clamp-3 leading-relaxed">
-                  {buildMessageSnippet(actionMessage)}
-                </p>
+                <div className="line-clamp-3 leading-relaxed break-words [overflow-wrap:anywhere]">
+                  {actionMessage.body ? (
+                    <RichMessageText text={actionMessage.body} />
+                  ) : (
+                    <p>{buildMessageSnippet(actionMessage)}</p>
+                  )}
+                </div>
               </div>
             </div>
 
